@@ -13,4 +13,4 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
 # Local path: track the in-tree leo3 crate for development.
 # Use the crates.io release for published builds.
-leo3 = { path = "../leo3/leo3" }
+leo3 = { path = "../leo3/leo3", features = ["meta"] }

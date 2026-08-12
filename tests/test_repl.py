@@ -1,0 +1,79 @@
+"""Repl tests: LeanDojo-compatible replay over the embedded Lean runtime."""
+
+import pytest
+
+from leotower import Repl
+
+
+ADD_COMM = "∀ n m : Nat, n + m = m + n"
+
+
+def test_repl_init_and_env():
+    repl = Repl()
+    assert repl.env_has_const("Nat.add")
+    assert repl.env_has_const("Nat")
+
+
+def test_set_goal_and_queries():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    assert s0 == 0
+    assert repl.get_num_goals(s0) == 1
+    goals = repl.get_goals(s0)
+    assert len(goals) == 1
+    assert "Nat" in goals[0].ty
+    pp = repl.get_goal_pp(s0)
+    assert "⊢" in pp
+
+
+def test_run_tac_steps():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    assert repl.get_num_goals(s1) == 1
+    pp = repl.get_goal_pp(s1)
+    assert "n : Nat" in pp
+    assert "m : Nat" in pp
+    s2 = repl.run_tac(s1, "induction n")
+    assert repl.get_num_goals(s2) == 2
+
+
+def test_end_to_end_add_comm():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    s2 = repl.run_tac(s1, "induction n")
+    assert repl.get_num_goals(s2) == 2
+    # base case: 0 + m = m + 0
+    s3 = repl.run_tac(s2, "simp only [Nat.zero_add, Nat.add_zero]")
+    assert repl.get_num_goals(s3) == 0
+    # step case: n + 1 + m = m + (n + 1) — branch from state 2
+    s4 = repl.run_tac(s2, "simp only [Nat.add_comm, Nat.add_succ]")
+    assert repl.get_num_goals(s4) == 0
+
+
+def test_invalid_tactic_raises_without_crashing():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    with pytest.raises(RuntimeError, match="tactic parse error"):
+        repl.run_tac(s0, "this is not a tactic !!!")
+    # The session stays usable after the error.
+    s1 = repl.run_tac(s0, "intro n m")
+    assert repl.get_num_goals(s1) == 1
+
+
+def test_run_cmd_validates_parse():
+    repl = Repl()
+    with pytest.raises(RuntimeError, match="command parse error"):
+        repl.run_cmd("this is not a command @@@")
+    with pytest.raises(RuntimeError, match="not yet supported"):
+        repl.run_cmd("def my_const : Nat := 42")
+
+
+def test_run_tac_on_closed_state_raises():
+    repl = Repl()
+    s0 = repl.set_goal("True")
+    s1 = repl.run_tac(s0, "trivial")
+    assert repl.get_num_goals(s1) == 0
+    with pytest.raises(RuntimeError, match="no goals"):
+        repl.run_tac(s1, "intro x")
