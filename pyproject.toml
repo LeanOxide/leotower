@@ -1,0 +1,43 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "leo3-py"
+version = "0.1.0"
+description = "Python bindings for Leo3 — safe, ergonomic Rust bindings for the Lean4 theorem prover"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT OR Apache-2.0" }
+authors = [
+    { name = "PuQing", email = "me@puqing.work" },
+]
+keywords = ["lean", "lean4", "theorem-prover", "bindings", "pyo3"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "maturin>=1.7,<2",
+    "pytest>=8",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "leo3_py._leo3"
+strip = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
