@@ -94,7 +94,7 @@ use leo3::meta::environment::LeanEnvironment;
 use leo3::meta::expr::LeanExpr;
 use leo3::meta::metam::MetaMContext;
 use leo3::meta::name::LeanName;
-use leo3::meta::repl::{import_modules_with_exts, parse_tactic, parse_term, run_tactic};
+use leo3::meta::repl::{import_modules_with_exts, run_tactic};
 use leo3::instance::LeanAny;
 use leo3::unbound::LeanUnbound;
 
@@ -195,7 +195,7 @@ impl Repl {
             let goal = metam.mk_goal(&true_const)?;
             let mvar = LeanExpr::mvar_id(&goal)?;
             let tac = format!("suffices h : {type_str} from fun _ => True.intro");
-            let stx = parse_tactic(lean, metam.env(), &tac)?;
+            let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), &tac)?;
             let outcome = run_tactic(&mut metam, &mvar, &stx, None)?;
             let goals = outcome
                 .goals
@@ -226,7 +226,7 @@ impl Repl {
                 .first()
                 .ok_or_else(|| LeanError::other("no goals left in this state"))?;
             let goal = goal.bind(lean);
-            let stx = parse_tactic(lean, metam.env(), tactic)?;
+            let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), tactic)?;
             // Branch from the target state's Meta.State snapshot (None →
             // run_tactic wraps metam.meta_state() in a fresh ref).
             metam.replace_meta_state(unsafe { st.meta_state.bind(lean).cast() });
@@ -324,16 +324,15 @@ impl Repl {
     /// the current environment, updating it. Returns a new state id (the
     /// tactic-goal state is unchanged).
     ///
-    /// Note: the underlying `Lean.Elab.Command.elabCommand` monad entry is
-    /// not yet stably bound to the embedded runtime's ABI; commands are
-    /// parsed (validating the syntax) and then rejected with a clear error
-    /// instead of corrupting the heap.
+    /// Commands are validated with Lean's real parser; the
+    /// `Lean.Elab.Command.elabCommand` monad entry is not yet stably
+    /// bridged to the embedded runtime's ABI, so execution raises a clear
+    /// error instead of corrupting the heap.
     fn run_cmd(&mut self, cmd: &str) -> PyResult<u64> {
         leo3::with_lean(|lean| -> LeanResult<u64> {
             let metam = self.rebind(lean)?;
             let env = metam.env().clone();
-            // Validate the command parses in the `command` category.
-            let _stx = parse_command(lean, &env, cmd)?;
+            let _stx = leo3::meta::repl::parse_command(lean, &env, cmd)?;
             let _ = metam.into_parts();
             Err(LeanError::other(
                 "run_cmd: command elaboration is not yet supported by the embedded runtime bridge",
