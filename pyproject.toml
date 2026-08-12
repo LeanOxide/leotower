@@ -3,7 +3,7 @@ requires = ["maturin>=1.7,<2"]
 build-backend = "maturin"
 
 [project]
-name = "leo3-py"
+name = "leotower"
 version = "0.1.0"
 description = "Python bindings for Leo3 — safe, ergonomic Rust bindings for the Lean4 theorem prover"
 readme = "README.md"
@@ -36,7 +36,7 @@ dev = [
 
 [tool.maturin]
 python-source = "python"
-module-name = "leo3_py._leo3"
+module-name = "leotower._leotower"
 strip = true
 
 [tool.pytest.ini_options]

@@ -21,7 +21,7 @@ wheels = [
 ]
 
 [[package]]
-name = "leo3-py"
+name = "leotower"
 version = "0.1.0"
 source = { editable = "." }
 

@@ -1,12 +1,12 @@
 [package]
-name = "leo3-py"
+name = "leotower"
 version = "0.1.0"
 edition = "2021"
 description = "Python bindings for Leo3 — safe, ergonomic Rust bindings for the Lean4 theorem prover"
 license = "MIT OR Apache-2.0"
 
 [lib]
-name = "_leo3"
+name = "_leotower"
 crate-type = ["cdylib"]
 
 [dependencies]

@@ -1,8 +1,8 @@
 //! Python bindings for Leo3 — safe, ergonomic Rust bindings for the Lean4
 //! theorem prover.
 //!
-//! This is the native extension module `leo3_py._leo3`.  The ergonomic
-//! Python-facing surface lives in `python/leo3_py/__init__.py`.
+//! This is the native extension module `leotower._leotower`.  The ergonomic
+//! Python-facing surface lives in `python/leotower/__init__.py`.
 
 use leo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
@@ -23,7 +23,7 @@ fn prepare_freethreaded_lean() {
 
 /// A session into the shared Lean runtime.
 ///
-/// Obtained from `leo3_py.with_lean()`.  Each method runs on the calling
+/// Obtained from `leotower.with_lean()`.  Each method runs on the calling
 /// thread, which is safely attached to Lean's runtime on first use; the
 /// session itself holds no Lean-owned state.
 #[pyclass]
@@ -84,9 +84,9 @@ impl LeanSession {
     }
 }
 
-/// `leo3_py._leo3` — the native extension module.
+/// `leotower._leotower` — the native extension module.
 #[pymodule]
-fn _leo3(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _leotower(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(prepare_freethreaded_lean, m)?)?;
     m.add_class::<LeanSession>()?;
     Ok(())

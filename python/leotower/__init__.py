@@ -1,10 +1,10 @@
-"""leo3-py: Python bindings for Leo3 — safe, ergonomic Rust bindings for the Lean4 theorem prover.
+"""leotower: Python bindings for Leo3 — safe, ergonomic Rust bindings for the Lean4 theorem prover.
 
 Usage:
 
-    import leo3_py
+    import leotower
 
-    with leo3_py.with_lean() as lean:
+    with leotower.with_lean() as lean:
         assert lean.nat_add(20, 22) == 42
         assert lean.pow_str(2, 100) == "1267650600228229401496703205376"
 
@@ -15,7 +15,7 @@ to the shared Lean runtime on first use.
 
 from contextlib import contextmanager
 
-from leo3_py._leo3 import LeanSession, prepare_freethreaded_lean
+from leotower._leotower import LeanSession, prepare_freethreaded_lean
 
 __all__ = ["with_lean", "LeanSession", "prepare_freethreaded_lean"]
 

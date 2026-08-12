@@ -1,4 +1,4 @@
-"""Benchmark: embedded Lean (leo3-py) vs one process per call (lean --run).
+"""Benchmark: embedded Lean (leotower) vs one process per call (lean --run).
 
 The subprocess mode mirrors how LeanDojo-style pipelines talk to Lean today:
 one Lean process per request.  The embedded mode keeps the runtime in-process.
@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import time
 
-import leo3_py
+import leotower
 
 N_EMBEDDED = 20_000
 N_SUBPROCESS = 20
@@ -19,7 +19,7 @@ SRC = "def main : IO Unit := IO.println (toString (Nat.add {i} 1))\n"
 
 
 def bench_embedded(n: int) -> float:
-    with leo3_py.with_lean() as lean:
+    with leotower.with_lean() as lean:
         t0 = time.perf_counter()
         for i in range(n):
             assert lean.nat_add(i, 1) == i + 1

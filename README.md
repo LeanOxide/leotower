@@ -1,4 +1,4 @@
-# leo3-py
+# leotower
 
 Python bindings for [Leo3](https://github.com/AndPuQing/leo3) — safe,
 ergonomic Rust bindings for the [Lean4](https://github.com/leanprover/lean4)
@@ -16,9 +16,9 @@ Requires a Lean 4.25.2 toolchain on `PATH` (install via
 [elan](https://github.com/leanprover/elan)).
 
 ```python
-import leo3_py
+import leotower
 
-with leo3_py.with_lean() as lean:
+with leotower.with_lean() as lean:
     assert lean.nat_add(20, 22) == 42
     assert lean.pow_str(2, 100) == "1267650600228229401496703205376"
     assert lean.string_roundtrip("你好, Lean!") == "你好, Lean!"
@@ -28,7 +28,7 @@ with leo3_py.with_lean() as lean:
 
 | Python | Lean runtime |
 |---|---|
-| `leo3_py.with_lean()` | context manager ensuring one-time runtime bootstrap + thread attach |
+| `leotower.with_lean()` | context manager ensuring one-time runtime bootstrap + thread attach |
 | `LeanSession.nat_roundtrip(n)` | `usize` ↔ `Nat` round trip |
 | `LeanSession.nat_add(a, b)` | `Nat.add` (small + big nat paths) |
 | `LeanSession.pow_str(a, b)` | `Nat.pow`, decimal string (exact beyond `u64`) |
