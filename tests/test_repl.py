@@ -98,3 +98,27 @@ def test_run_tac_on_closed_state_raises():
     assert repl.get_num_goals(s1) == 0
     with pytest.raises(RuntimeError, match="no goals"):
         repl.run_tac(s1, "intro x")
+
+
+def test_repl_loads_lean_file():
+    import os
+
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "repl_demo.lean")
+    repl = Repl(path)
+    assert repl.env_has_const("demo_base")
+    assert repl.env_has_const("demo_thm")
+    # Commands can reference the file's definitions.
+    repl.run_cmd("#check demo_base + demo_base")
+    repl.run_cmd("theorem demo_cor : demo_base = demo_base := rfl")
+    assert repl.env_has_const("demo_cor")
+    # The session is usable for goals afterwards.
+    s0 = repl.set_goal("∀ n : Nat, n + 0 = n")
+    s1 = repl.run_tac(s0, "intro n")
+    assert repl.get_num_goals(s1) == 1
+
+
+def test_repl_loads_missing_file_raises():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="cannot read"):
+        Repl("tests/fixtures/does_not_exist.lean")

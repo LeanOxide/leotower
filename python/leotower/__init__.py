@@ -68,6 +68,13 @@ class Repl:
     """
 
     def __init__(self, module: str = "Lean"):
+        """LeanDojo-style replay session.
+
+        ``module`` is a Lean module name (imported from the Lean search
+        path, default "Lean") or the path of a ``.lean`` file whose
+        top-level commands are elaborated into the session environment
+        (``import`` lines are skipped).
+        """
         self._repl = _Repl(module)
 
     # -- state management ---------------------------------------------------

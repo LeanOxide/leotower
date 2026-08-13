@@ -159,14 +159,36 @@ impl Repl {
 
 #[pymethods]
 impl Repl {
-    /// Create a replay session, importing the given module (default "Lean").
+    /// Create a replay session, importing the given module (default "Lean")
+    /// or loading a `.lean` source file (whose top-level commands are
+    /// elaborated in order; `import` lines are skipped — the Lean prelude
+    /// is always imported).
     #[new]
     #[pyo3(signature = (module=None))]
     fn new(module: Option<String>) -> PyResult<Self> {
         leo3::with_lean(|lean| -> LeanResult<Self> {
-            let names: &[&str] = &[module.as_deref().unwrap_or("Lean")];
-            let env = import_modules_with_exts(lean, names, 0, true)?;
-            let metam = MetaMContext::new(lean, env)?;
+            let mut metam = match &module {
+                Some(m) if m.ends_with(".lean") => {
+                    let src = std::fs::read_to_string(m).map_err(|e| {
+                        LeanError::other(&format!("cannot read {m}: {e}"))
+                    })?;
+                    let env = import_modules_with_exts(lean, &["Lean"], 0, true)?;
+                    let mut metam = MetaMContext::new(lean, env)?;
+                    let cmds = leo3::meta::repl::parse_file_commands(
+                        lean, metam.env(), &src, m,
+                    )?;
+                    for stx in &cmds {
+                        let env2 = leo3::meta::repl::run_command(lean, &metam, stx)?;
+                        metam.replace_env(env2);
+                    }
+                    metam
+                }
+                _ => {
+                    let names: &[&str] = &[module.as_deref().unwrap_or("Lean")];
+                    let env = import_modules_with_exts(lean, names, 0, true)?;
+                    MetaMContext::new(lean, env)?
+                }
+            };
             let (env, core_ctx, core_state, meta_ctx, meta_state) = metam.into_parts();
             Ok(Repl {
                 env: env.unbind_mt(),
