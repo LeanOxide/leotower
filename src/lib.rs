@@ -236,29 +236,46 @@ impl Repl {
         .map_err(to_py_err)
     }
 
-    /// Apply a tactic to the first goal of `state`; returns the new state id.
-    fn run_tac(&mut self, state: u64, tactic: &str) -> PyResult<u64> {
+    /// Apply a tactic to the `goal_idx`-th goal of `state` (default 0);
+    /// returns the new state id. Multi-goal states (induction/split/cases)
+    /// can be advanced goal by goal in any order.
+    #[pyo3(signature = (state, tactic, goal_idx=None))]
+    fn run_tac(&mut self, state: u64, tactic: &str, goal_idx: Option<usize>) -> PyResult<u64> {
         leo3::with_lean(|lean| -> LeanResult<u64> {
             let mut metam = self.rebind(lean)?;
             let st = self
                 .states
                 .get(state as usize)
                 .ok_or_else(|| LeanError::other("unknown state"))?;
+            let idx = goal_idx.unwrap_or(0);
             let goal = st
                 .goals
-                .first()
-                .ok_or_else(|| LeanError::other("no goals left in this state"))?;
+                .get(idx)
+                .ok_or_else(|| {
+                    LeanError::other(&format!(
+                        "no goal at index {idx} (state has {} goals)",
+                        st.goals.len()
+                    ))
+                })?;
             let goal = goal.bind(lean);
             let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), tactic)?;
             // Branch from the target state's Meta.State snapshot (None →
             // run_tactic wraps metam.meta_state() in a fresh ref).
             metam.replace_meta_state(unsafe { st.meta_state.bind(lean).cast() });
             let outcome = run_tactic(&mut metam, &goal, &stx, None)?;
-            let goals = outcome
+            // `Elab.runTactic` returns only the goals produced by the tactic
+            // run itself; the source state's OTHER goals (multi-goal states
+            // from induction/split/cases, or goals the tactic solved
+            // implicitly) stay in the meta state but are not in that list.
+            // Preserve them so a proof can advance goal by goal.
+            let mut goals = st
                 .goals
-                .into_iter()
-                .map(|g| g.unbind_mt())
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != idx)
+                .map(|(_, g)| g.clone())
                 .collect::<Vec<_>>();
+            goals.extend(outcome.goals.into_iter().map(|g| g.unbind_mt()));
             let meta_state = metam.meta_state_snapshot();
             self.save(metam);
             self.states.push(ReplState {

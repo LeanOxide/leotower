@@ -82,11 +82,14 @@ class Repl:
         """Set the root goal from a term string; returns state 0."""
         return self._repl.set_goal(type_str)
 
-    def run_tac(self, state: int, tactic: str) -> int:
-        """Apply ``tactic`` to the first goal of ``state``; returns the new
-        state id.  Invalid tactics raise :class:`RuntimeError` (the
-        interpreter and the replay state stay intact)."""
-        return self._repl.run_tac(state, tactic)
+    def run_tac(self, state: int, tactic: str, goal_idx: int = 0) -> int:
+        """Apply ``tactic`` to the ``goal_idx``-th goal of ``state`` (default
+        0); returns the new state id.  Multi-goal states (from ``induction``,
+        ``split``, ``cases``) keep their unworked goals in the new state, so
+        a proof can advance goal by goal in any order.  Invalid tactics
+        raise :class:`RuntimeError` (the interpreter and the replay state
+        stay intact)."""
+        return self._repl.run_tac(state, tactic, goal_idx)
 
     def run_cmd(self, cmd: str) -> int:
         """Execute a Lean command in the current environment.

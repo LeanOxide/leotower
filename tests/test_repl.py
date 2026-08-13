@@ -45,12 +45,36 @@ def test_end_to_end_add_comm():
     s1 = repl.run_tac(s0, "intro n m")
     s2 = repl.run_tac(s1, "induction n")
     assert repl.get_num_goals(s2) == 2
-    # base case: 0 + m = m + 0
-    s3 = repl.run_tac(s2, "simp only [Nat.zero_add, Nat.add_zero]")
-    assert repl.get_num_goals(s3) == 0
-    # step case: n + 1 + m = m + (n + 1) — branch from state 2
-    s4 = repl.run_tac(s2, "simp only [Nat.add_comm, Nat.add_succ]")
+    # base case: 0 + m = m + 0 — closing goal 0 must PRESERVE the step goal
+    s3 = repl.run_tac(s2, "simp only [Nat.zero_add, Nat.add_zero]", goal_idx=0)
+    assert repl.get_num_goals(s3) == 1
+    assert "n" in repl.get_goal_pp(s3, 0)
+    # step case: n + 1 + m = m + (n + 1)
+    s4 = repl.run_tac(s3, "simp only [Nat.add_comm, Nat.add_succ]")
     assert repl.get_num_goals(s4) == 0
+
+
+def test_run_tac_goal_selection_arbitrary_order():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    s2 = repl.run_tac(s1, "induction n")
+    assert repl.get_num_goals(s2) == 2
+    # close the STEP goal first, then the base — goal selection is arbitrary
+    t = repl.run_tac(s2, "simp only [Nat.add_comm, Nat.add_succ]", goal_idx=1)
+    assert repl.get_num_goals(t) == 1
+    assert "0 + m" in repl.get_goal_pp(t, 0)
+    t2 = repl.run_tac(t, "simp only [Nat.zero_add, Nat.add_zero]")
+    assert repl.get_num_goals(t2) == 0
+
+
+def test_run_tac_goal_idx_out_of_range():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    s2 = repl.run_tac(s1, "induction n")
+    with pytest.raises(RuntimeError, match="no goal at index"):
+        repl.run_tac(s2, "simp", goal_idx=5)
 
 
 def test_invalid_tactic_raises_without_crashing():
@@ -97,7 +121,7 @@ def test_run_tac_on_closed_state_raises():
     s0 = repl.set_goal("True")
     s1 = repl.run_tac(s0, "trivial")
     assert repl.get_num_goals(s1) == 0
-    with pytest.raises(RuntimeError, match="no goals"):
+    with pytest.raises(RuntimeError, match="no goal at index"):
         repl.run_tac(s1, "intro x")
 
 
