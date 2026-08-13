@@ -290,11 +290,13 @@ impl Repl {
             let mut out = Vec::new();
             for g in &st.goals {
                 let gb = g.bind(lean);
-                let (hyps, ty) = metam.goal_hyps_and_type(&gb)?;
+                // Hypothesis types and the goal type are pretty-printed with
+                // Lean's real pretty printer (user-facing names, notations).
+                let (hyps, ty_pp) = metam.goal_hyps_and_type_pp(&gb)?;
                 let mvar_str = leo3_name_to_string(lean, &gb)?;
                 out.push(Goal {
                     hyps,
-                    ty: LeanExpr::dbg_to_string(&ty)?,
+                    ty: ty_pp,
                     mvar: mvar_str,
                 });
             }
@@ -303,7 +305,9 @@ impl Repl {
         .map_err(to_py_err)
     }
 
-    /// Pretty-print a goal: hypotheses followed by the goal type.
+    /// Pretty-print a goal with Lean's real pretty printer (delaborator +
+    /// pretty printer): hypotheses followed by the goal type, using the
+    /// user-facing variable names and the usual notations.
     #[pyo3(signature = (state, goal_idx=None))]
     fn get_goal_pp(&self, state: u64, goal_idx: Option<usize>) -> PyResult<String> {
         let idx = goal_idx.unwrap_or(0);
@@ -318,17 +322,7 @@ impl Repl {
         leo3::with_lean(|lean| -> LeanResult<String> {
             let mut metam = self.rebind(lean)?;
             let gb = g.bind(lean);
-            let (hyps, ty) = metam.goal_hyps_and_type(&gb)?;
-            let mut s = String::new();
-            for (name, ty) in &hyps {
-                s.push_str(name);
-                s.push_str(" : ");
-                s.push_str(ty);
-                s.push('\n');
-            }
-            s.push_str("⊢ ");
-            s.push_str(&LeanExpr::dbg_to_string(&ty)?);
-            Ok(s)
+            leo3::meta::repl::pp_goal(&mut metam, &gb)
         })
         .map_err(to_py_err)
     }

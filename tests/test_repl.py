@@ -32,8 +32,9 @@ def test_run_tac_steps():
     s1 = repl.run_tac(s0, "intro n m")
     assert repl.get_num_goals(s1) == 1
     pp = repl.get_goal_pp(s1)
-    assert "n : Nat" in pp
-    assert "m : Nat" in pp
+    # Real pretty printer groups same-type hypotheses on one line.
+    assert "n m : Nat" in pp
+    assert "n + m = m + n" in pp
     s2 = repl.run_tac(s1, "induction n")
     assert repl.get_num_goals(s2) == 2
 
