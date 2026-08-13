@@ -84,9 +84,11 @@ class Repl:
     def run_cmd(self, cmd: str) -> int:
         """Execute a Lean command in the current environment.
 
-        Commands are parsed with Lean's real parser; full command
-        elaboration is not yet available in the embedded bridge and raises
-        :class:`RuntimeError`.
+        The command is parsed with Lean's real parser and elaborated by the
+        embedded frontend (``Lean.Elab.Command.elabCommandTopLevel``); the
+        resulting environment is installed for subsequent calls. Commands
+        that fail elaboration raise :class:`RuntimeError` (the session stays
+        usable). Returns the current tactic state id.
         """
         return self._repl.run_cmd(cmd)
 

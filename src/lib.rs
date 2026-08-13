@@ -324,19 +324,20 @@ impl Repl {
     /// the current environment, updating it. Returns a new state id (the
     /// tactic-goal state is unchanged).
     ///
-    /// Commands are validated with Lean's real parser; the
-    /// `Lean.Elab.Command.elabCommand` monad entry is not yet stably
-    /// bridged to the embedded runtime's ABI, so execution raises a clear
-    /// error instead of corrupting the heap.
+    /// The command is parsed with Lean's real parser and elaborated by the
+    /// embedded `Lean.Elab.Command.elabCommandTopLevel` frontend; the
+    /// resulting environment is installed for subsequent calls. Commands
+    /// that fail elaboration raise `RuntimeError` (the replay session stays
+    /// intact).
     fn run_cmd(&mut self, cmd: &str) -> PyResult<u64> {
         leo3::with_lean(|lean| -> LeanResult<u64> {
-            let metam = self.rebind(lean)?;
-            let env = metam.env().clone();
-            let _stx = leo3::meta::repl::parse_command(lean, &env, cmd)?;
-            let _ = metam.into_parts();
-            Err(LeanError::other(
-                "run_cmd: command elaboration is not yet supported by the embedded runtime bridge",
-            ))
+            let mut metam = self.rebind(lean)?;
+            let stx = leo3::meta::repl::parse_command(lean, metam.env(), cmd)?;
+            let env2 = leo3::meta::repl::run_command(lean, &metam, &stx)?;
+            metam.replace_env(env2);
+            self.save(metam);
+            // Tactic-goal states are untouched by command execution.
+            Ok(self.states.len().saturating_sub(1) as u64)
         })
         .map_err(to_py_err)
     }

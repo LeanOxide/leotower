@@ -66,8 +66,29 @@ def test_run_cmd_validates_parse():
     repl = Repl()
     with pytest.raises(RuntimeError, match="command parse error"):
         repl.run_cmd("this is not a command @@@")
-    with pytest.raises(RuntimeError, match="not yet supported"):
-        repl.run_cmd("def my_const : Nat := 42")
+
+
+def test_run_cmd_executes_and_updates_env():
+    repl = Repl()
+    repl.run_cmd("def my_const : Nat := 42")
+    assert repl.env_has_const("my_const")
+    # Chained commands see earlier declarations.
+    repl.run_cmd("theorem my_thm : my_const = my_const := rfl")
+    assert repl.env_has_const("my_thm")
+    # #check succeeds (information message, not an error).
+    repl.run_cmd("#check Nat.add")
+
+
+def test_run_cmd_failure_raises_and_session_survives():
+    repl = Repl()
+    with pytest.raises(RuntimeError, match="command failed"):
+        repl.run_cmd("theorem bad : unknown_constant_xyz = 1 := rfl")
+    # The session stays usable after the error.
+    repl.run_cmd("axiom my_ax_ok : Nat")
+    assert repl.env_has_const("my_ax_ok")
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    assert repl.get_num_goals(s1) == 1
 
 
 def test_run_tac_on_closed_state_raises():
