@@ -122,3 +122,24 @@ def test_repl_loads_missing_file_raises():
 
     with pytest.raises(RuntimeError, match="cannot read"):
         Repl("tests/fixtures/does_not_exist.lean")
+
+
+def test_run_tac_uses_locally_defined_constants():
+    """Tactic elaboration must see constants added by run_cmd / file load."""
+    repl = Repl()
+    repl.run_cmd("def local_base : Nat := 21")
+    s0 = repl.set_goal("local_base = 21")
+    s1 = repl.run_tac(s0, "rfl")
+    assert repl.get_num_goals(s1) == 0
+    s0 = repl.set_goal("local_base + local_base = 42")
+    s1 = repl.run_tac(s0, "native_decide")
+    assert repl.get_num_goals(s1) == 0
+
+
+def test_run_tac_rw_with_locally_defined_theorem():
+    repl = Repl()
+    repl.run_cmd("theorem add_zero_l (n : Nat) : n + 0 = n := Nat.add_zero n")
+    s0 = repl.set_goal("∀ n : Nat, (n + 0) + 0 = n")
+    s1 = repl.run_tac(s0, "intro n")
+    s2 = repl.run_tac(s1, "rw [add_zero_l]")
+    assert repl.get_num_goals(s2) == 0, [g.ty for g in repl.get_goals(s2)]

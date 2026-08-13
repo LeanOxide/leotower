@@ -204,8 +204,9 @@ impl Repl {
 
     /// Set the root goal from a term string. The type is elaborated by
     /// Lean's real elaborator through the `suffices` tactic: create a `True`
-    /// goal and rewrite it to `type_str` (`suffices h : t from fun _ =>
-    /// True.intro`). Returns state 0.
+    /// goal and replace it with `type_str` (`suffices h : t from True.intro`
+    /// — the `from` proof is `True.intro`, the target type is the new goal).
+    /// Returns state 0.
     fn set_goal(&mut self, type_str: &str) -> PyResult<u64> {
         leo3::with_lean(|lean| -> LeanResult<u64> {
             let mut metam = self.rebind(lean)?;
@@ -216,7 +217,7 @@ impl Repl {
             )?;
             let goal = metam.mk_goal(&true_const)?;
             let mvar = LeanExpr::mvar_id(&goal)?;
-            let tac = format!("suffices h : {type_str} from fun _ => True.intro");
+            let tac = format!("suffices h : {type_str} from True.intro");
             let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), &tac)?;
             let outcome = run_tactic(&mut metam, &mvar, &stx, None)?;
             let goals = outcome
