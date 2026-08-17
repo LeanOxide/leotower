@@ -168,3 +168,114 @@ def test_run_tac_rw_with_locally_defined_theorem():
     s1 = repl.run_tac(s0, "intro n")
     s2 = repl.run_tac(s1, "rw [add_zero_l]")
     assert repl.get_num_goals(s2) == 0, [g.ty for g in repl.get_goals(s2)]
+
+
+# ---------------------------------------------------------------------------
+# P0 regression: tactic errors must be surfaced, not silently swallowed
+# ---------------------------------------------------------------------------
+
+
+def test_run_tac_type_error_raises():
+    """`exact 42` against a proposition goal records an error diagnostic;
+    the tactic returns Ok but the message must be surfaced as an exception."""
+    repl = Repl()
+    s0 = repl.set_goal("∀ n m : Nat, n + m = m + n")
+    s1 = repl.run_tac(s0, "intro n m")
+    with pytest.raises(RuntimeError, match="tactic error"):
+        repl.run_tac(s1, "exact 42")
+    # Session stays usable after the error.
+    s3 = repl.run_tac(s1, "exact Nat.add_comm n m")
+    assert repl.get_num_goals(s3) == 0
+
+
+def test_run_tac_unknown_identifier_raises():
+    """`rw [nonexistent_lemma]` errors with the unknown identifier message."""
+    repl = Repl()
+    s0 = repl.run_tac(repl.set_goal("∀ n m : Nat, n + m = m + n"), "intro n m")
+    with pytest.raises(RuntimeError, match="tactic error"):
+        repl.run_tac(s0, "rw [nonexistent_lemma]")
+
+
+def test_run_tac_valid_still_works():
+    """Valid tactics are unaffected by the error scan."""
+    repl = Repl()
+    s0 = repl.run_tac(repl.set_goal("∀ n m : Nat, n + m = m + n"), "intro n m")
+    s1 = repl.run_tac(s0, "exact Nat.add_comm n m")
+    assert repl.get_num_goals(s1) == 0
+
+
+# ---------------------------------------------------------------------------
+# P1 regression: dotted module names + LEAN_PATH search path support
+# ---------------------------------------------------------------------------
+
+
+def test_repl_imports_dotted_modules(tmp_path):
+    """Dot-separated module names must resolve to hierarchical Lean names
+    (regression: `basic.MyThm` failed with `unknown module prefix` because
+    the name was built as a flat component instead of a hierarchy)."""
+    import os
+    import subprocess
+
+    lean = os.environ.get(
+        "LEAN_BIN", "/home/ljm/.lemma/toolchains/v4.25.2-linux/bin/lean"
+    )
+    if not os.path.exists(lean):
+        pytest.skip("lean toolchain not found")
+    src_dir = tmp_path / "basic"
+    src_dir.mkdir()
+    (src_dir / "MyThm.lean").write_text("theorem my_thm : 1 + 1 = 2 := by rfl\n")
+    lib = tmp_path / "build" / "lib" / "lean" / "basic"
+    lib.mkdir(parents=True)
+    subprocess.run(
+        [lean, "-R", str(tmp_path),
+         "-o", str(tmp_path / "build" / "lib" / "lean" / "basic" / "MyThm.olean"),
+         str(src_dir / "MyThm.lean")],
+        check=True,
+        capture_output=True,
+    )
+    os.environ["LEAN_PATH"] = str(tmp_path / "build" / "lib" / "lean")
+    try:
+        repl = Repl("basic.MyThm")
+        assert repl.env_has_const("my_thm")
+    finally:
+        os.environ.pop("LEAN_PATH", None)
+
+
+def test_repl_import_missing_module_raises():
+    with pytest.raises(RuntimeError, match="unknown module prefix"):
+        Repl("No.Such.Module")
+
+
+def test_repl_import_via_lean_path(tmp_path):
+    """Modules compiled into a lake-style search path (like Mathlib) must be
+    importable via LEAN_PATH; missing ones must fail loudly."""
+    import os
+    import subprocess
+
+    lean = os.environ.get(
+        "LEAN_BIN", "/home/ljm/.lemma/toolchains/v4.25.2-linux/bin/lean"
+    )
+    if not os.path.exists(lean):
+        pytest.skip("lean toolchain not found")
+    # Build a tiny "lake-style" module: `basic/MyThm.lean` -> basic.MyThm.olean
+    src_dir = tmp_path / "basic"
+    src_dir.mkdir()
+    (src_dir / "MyThm.lean").write_text(
+        "theorem my_thm : 1 + 1 = 2 := by rfl\n"
+    )
+    lib = tmp_path / "build" / "lib" / "lean" / "basic"
+    lib.mkdir(parents=True)
+    subprocess.run(
+        [lean, "-R", str(tmp_path),
+         "-o", str(tmp_path / "build" / "lib" / "lean" / "basic" / "MyThm.olean"),
+         str(src_dir / "MyThm.lean")],
+        check=True,
+        capture_output=True,
+    )
+    os.environ["LEAN_PATH"] = str(tmp_path / "build" / "lib" / "lean")
+    try:
+        repl = Repl("basic.MyThm")
+        repl.run_cmd("#check my_thm")  # no exception => symbol resolved
+        assert repl.env_has_const("my_thm")
+    finally:
+        os.environ.pop("LEAN_PATH", None)
