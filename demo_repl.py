@@ -71,19 +71,13 @@ print(f"文件里的 demo_thm 可用吗？ -> {repl2.env_has_const('demo_thm')}"
 s_c = repl2.set_goal("demo_base = demo_base")
 s_d = repl2.run_tac(s_c, "rfl")
 print(f"引用文件里的定义证明 -> 剩余目标数 = {repl2.get_num_goals(s_d)}")
-show("⑨ Mathlib：lake 构建的完整库（独立子进程）")
-# 嵌入式运行时在同一进程里跨 Repl 会话保留全局静态状态：先建过 core Lean
-# 会话后，同进程 Mathlib 会话的 ring/norm_num 会触发进程级 abort
-# （leo3 运行时会话隔离问题，见 README「已知限制」）。
-# 正确用法是「每种库一个进程」，故在干净子进程里演示 Mathlib。
-import subprocess
-import sys
-import time
+show("⑨ Mathlib：lake 构建的完整库（与 core Repl 共存）")
+# Lean's import initializer execution is re-enabled for every environment,
+# so this Mathlib session can safely follow the core-Lean sessions above.
+from pathlib import Path
 
 
 def _mathlib_lean_path():
-    from pathlib import Path
-
     for root in (Path(__file__).resolve().parent.parent / "mathlib4",
                  Path.home() / "mathlib4"):
         if (root / ".lake" / "build" / "lib" / "lean" / "Mathlib.olean").exists():
@@ -103,28 +97,16 @@ lp = _mathlib_lean_path()
 if lp is None:
     print("（本机未找到 mathlib4 构建，跳过此节；构建方式见 README）")
 else:
-    snippet = (
-        "import time\n"
-        "from leotower import Repl\n"
-        "t0 = time.time()\n"
-        "repl = Repl('Mathlib')\n"
-        "print(f'import Mathlib  {time.time()-t0:.1f}s')\n"
-        "s0 = repl.set_goal('\\u2200 n m : Nat, n + m = m + n')\n"
-        "s1 = repl.run_tac(repl.run_tac(s0, 'intro n m'), 'linarith')\n"
-        "print(f'linarith  -> {repl.get_num_goals(s1)} 目标')\n"
-        "s0 = repl.set_goal('\\u2200 a b c : Nat, a * (b + c) = a * b + a * c')\n"
-        "s1 = repl.run_tac(repl.run_tac(s0, 'intro a b c'), 'ring')\n"
-        "print(f'ring      -> {repl.get_num_goals(s1)} 目标')\n"
-        "s0 = repl.set_goal('2 + 2 = 4')\n"
-        "s1 = repl.run_tac(s0, 'norm_num')\n"
-        "print(f'norm_num  -> {repl.get_num_goals(s1)} 目标')\n"
-    )
-    env = dict(os.environ)
-    env["LEAN_PATH"] = lp
-    r = subprocess.run([sys.executable, "-c", snippet], env=env,
-                       capture_output=True, text=True, timeout=300)
-    print(r.stdout.strip())
-    if r.returncode != 0:
-        print("子进程失败:", r.stderr.strip()[-300:])
+    os.environ["LEAN_PATH"] = lp
+    repl3 = Repl("Mathlib")
+    s0 = repl3.set_goal("∀ n m : Nat, n + m = m + n")
+    s1 = repl3.run_tac(repl3.run_tac(s0, "intro n m"), "linarith")
+    print(f"linarith  -> {repl3.get_num_goals(s1)} 目标")
+    s0 = repl3.set_goal("∀ a b c : Nat, a * (b + c) = a * b + a * c")
+    s1 = repl3.run_tac(repl3.run_tac(s0, "intro a b c"), "ring")
+    print(f"ring      -> {repl3.get_num_goals(s1)} 目标")
+    s0 = repl3.set_goal("2 + 2 = 4")
+    s1 = repl3.run_tac(s0, "norm_num")
+    print(f"norm_num  -> {repl3.get_num_goals(s1)} 目标")
 
 print("\n🎉 Repl 演示完毕：状态式回放、结构化目标查询、错误容错、动态加定义、Mathlib 集成，全部跑通。")

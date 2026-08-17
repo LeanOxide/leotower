@@ -349,48 +349,38 @@ def _mathlib_lean_path():
 
 
 def test_repl_mathlib_import_and_tactics():
-    """A lake-built Mathlib imports through the search path and its tactics
-    (linarith / ring / norm_num) close goals in the embedded runtime — the
-    capabilities absent from the core Lean environment. Skipped when no
-    local mathlib4 build exists.
+    """Mathlib tactics survive a preceding core-Lean Repl in one process.
 
-    Runs in a subprocess: the embedded Lean runtime keeps global static
-    state across Repl sessions, and a preceding core-`Lean` session
-    (created by other tests in this file) poisons linarith's goal
-    normalisation in later Mathlib sessions. A fresh process is the
-    honest environment for this check (and what an end user gets).
+    This is the regression for Leo3's initializer-execution flag: Lean's
+    ``withImporting`` resets that process-global flag after each import, so
+    Leo3 must re-enable it before every independent Repl environment import.
+    Skipped when no local mathlib4 build exists.
     """
     import os
-    import subprocess
-    import sys
 
     lean_path = _mathlib_lean_path()
     if lean_path is None:
         pytest.skip("no locally built mathlib4 (expected: ../mathlib4/.lake/build)")
-    snippet = (
-        "from leotower import Repl\n"
-        "repl = Repl('Mathlib')\n"
-        "s0 = repl.set_goal('\\u2200 n m : Nat, n + m = m + n')\n"
-        "s1 = repl.run_tac(repl.run_tac(s0, 'intro n m'), 'linarith')\n"
-        "assert repl.get_num_goals(s1) == 0, 'linarith'\n"
-        "s0 = repl.set_goal('\\u2200 a b c : Nat, a * (b + c) = a * b + a * c')\n"
-        "s1 = repl.run_tac(repl.run_tac(s0, 'intro a b c'), 'ring')\n"
-        "assert repl.get_num_goals(s1) == 0, 'ring'\n"
-        "s0 = repl.set_goal('2 + 2 = 4')\n"
-        "s1 = repl.run_tac(s0, 'norm_num')\n"
-        "assert repl.get_num_goals(s1) == 0, 'norm_num'\n"
-        "print('MATHLIB-OK')\n"
-    )
-    env = dict(os.environ)
-    env["LEAN_PATH"] = lean_path
-    r = subprocess.run(
-        [sys.executable, "-c", snippet],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    assert r.returncode == 0 and "MATHLIB-OK" in r.stdout, (
-        f"mathlib subprocess failed (exit {r.returncode}):\n"
-        f"{r.stdout}\n{r.stderr}"
-    )
+    old = os.environ.get("LEAN_PATH")
+    os.environ["LEAN_PATH"] = lean_path
+    try:
+        # Explicitly exercise the formerly poisonous order.
+        Repl()
+        repl = Repl("Mathlib")
+
+        s0 = repl.set_goal("∀ n m : Nat, n + m = m + n")
+        s1 = repl.run_tac(repl.run_tac(s0, "intro n m"), "linarith")
+        assert repl.get_num_goals(s1) == 0
+
+        s0 = repl.set_goal("∀ a b c : Nat, a * (b + c) = a * b + a * c")
+        s1 = repl.run_tac(repl.run_tac(s0, "intro a b c"), "ring")
+        assert repl.get_num_goals(s1) == 0
+
+        s0 = repl.set_goal("2 + 2 = 4")
+        s1 = repl.run_tac(s0, "norm_num")
+        assert repl.get_num_goals(s1) == 0
+    finally:
+        if old is None:
+            os.environ.pop("LEAN_PATH", None)
+        else:
+            os.environ["LEAN_PATH"] = old

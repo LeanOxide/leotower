@@ -81,15 +81,6 @@ Known limitations:
   goal types (induction step cases) in the embedded elaborator — use
   `simp only [...]` there. This mirrors upstream: the same rule set behaves
   the same way under the system `lean` binary.
-- The embedded runtime keeps **global static state across `Repl` sessions** in
-  one process: once a core-`Lean` session has been created in the process, a
-  later `Mathlib` session mis-evaluates Mathlib's `[init]` extension
-  registrations — `linarith` fails to normalise goals, and `ring` /
-  `norm_num` abort the whole process (uncaught `lean::exception`: `cannot
-  evaluate [init] declaration 'Mathlib.Meta.NormNum.normNumExt' in the same
-  module`, exit 134). The environment and other tactics are unaffected.
-  **One process per library** avoids it — the test suite and the demo run
-  the Mathlib check in a subprocess for this reason.
 
 ### Mathlib
 
@@ -124,6 +115,9 @@ assert repl.get_num_goals(s2) == 0
 
 The search path is re-read on every `Repl`, so `LEAN_PATH` may be set (or
 changed) at any time before a `Repl` is constructed.
+
+Each import re-enables Lean's initializer execution, so core `Lean` and
+`Mathlib` Repl sessions may safely coexist in one process.
 
 ## Why embed instead of subprocess?
 
