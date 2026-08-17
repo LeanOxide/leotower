@@ -75,10 +75,55 @@ assert repl.get_num_goals(s4) == 0
 Tactic failures raise `RuntimeError` with the elaborator's error message
 (`tactic error: ...`); the session stays usable afterwards.
 
-Known limitation: the default `simp` rule set does not make progress on
-metavariable-applied goal types (induction step cases) in the embedded
-elaborator — use `simp only [...]` there. This mirrors upstream: the same
-rule set behaves the same way under the system `lean` binary.
+Known limitations:
+
+- The default `simp` rule set does not make progress on metavariable-applied
+  goal types (induction step cases) in the embedded elaborator — use
+  `simp only [...]` there. This mirrors upstream: the same rule set behaves
+  the same way under the system `lean` binary.
+- The embedded runtime keeps **global static state across `Repl` sessions** in
+  one process: once a core-`Lean` session has been created in the process, a
+  later `Mathlib` session mis-evaluates Mathlib's `[init]` extension
+  registrations — `linarith` fails to normalise goals, and `ring` /
+  `norm_num` abort the whole process (uncaught `lean::exception`: `cannot
+  evaluate [init] declaration 'Mathlib.Meta.NormNum.normNumExt' in the same
+  module`, exit 134). The environment and other tactics are unaffected.
+  **One process per library** avoids it — the test suite and the demo run
+  the Mathlib check in a subprocess for this reason.
+
+### Mathlib
+
+`Repl("Mathlib")` imports a [lake](https://leanprover.github.io/lean4/doc/lake.html)-built
+Mathlib checkout and exposes its tactics (`linarith`, `ring`, `norm_num`,
+`omega`, the full `simp` set, ...). Point `LEAN_PATH` at the checkout's build
+directories — `lake env printenv LEAN_PATH` in the checkout prints them:
+
+```bash
+# one-time: clone the mathlib tag matching the toolchain and build it
+git clone --branch v4.25.2 https://github.com/leanprover-community/mathlib4
+cd mathlib4 && lake build
+```
+
+```python
+import os
+
+os.environ["LEAN_PATH"] = (
+    "/path/to/mathlib4/.lake/build/lib/lean:"
+    "/path/to/mathlib4/.lake/packages/batteries/.lake/build/lib/lean:"
+    # ... plus the remaining lake package dirs (aesop, Qq, Cli, ...)
+)
+
+from leotower import Repl
+
+repl = Repl("Mathlib")                    # full library, ~7s import
+s0 = repl.set_goal("∀ n m : Nat, n + m = m + n")
+s1 = repl.run_tac(s0, "intro n m")
+s2 = repl.run_tac(s1, "linarith")         # mathlib tactic
+assert repl.get_num_goals(s2) == 0
+```
+
+The search path is re-read on every `Repl`, so `LEAN_PATH` may be set (or
+changed) at any time before a `Repl` is constructed.
 
 ## Why embed instead of subprocess?
 
