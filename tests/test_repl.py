@@ -13,6 +13,40 @@ def test_repl_init_and_env():
     assert repl.env_has_const("Nat.add")
     assert repl.env_has_const("Nat")
 
+def test_induction_with_clause_closes_proof():
+    """`induction n with | zero => ... | succ ... => ...` is accepted and
+    the branch naming works; a fully closing branch set ends at 0 goals.
+    """
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    s2 = repl.run_tac(
+        s1,
+        "induction n with | zero => simp only [Nat.zero_add, Nat.add_zero]"
+        " | succ k ih => simp only [Nat.add_comm, Nat.add_succ]",
+    )
+    assert repl.get_num_goals(s2) == 0
+
+
+def test_induction_with_unclosed_branch_raises():
+    """A `with` branch that leaves its goal unsolved is rejected with the
+    elaborator's unsolved-goals diagnostic — the system lean binary reports
+    the same error at the end of the with-clause (verified against
+    4.25.2). The session stays usable afterwards.
+    """
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    with pytest.raises(RuntimeError, match="tactic error"):
+        repl.run_tac(
+            s1,
+            "induction n with | zero => simp only [Nat.zero_add]"
+            " | succ k ih => simp only [Nat.add_comm]",
+        )
+    # the session survives the failed tactic: a valid one still applies
+    s2 = repl.run_tac(s1, "induction n")
+    assert repl.get_num_goals(s2) == 2
+
 
 def test_set_goal_and_queries():
     repl = Repl()
