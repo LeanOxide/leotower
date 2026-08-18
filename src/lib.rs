@@ -167,7 +167,7 @@ impl Repl {
     #[pyo3(signature = (module=None))]
     fn new(module: Option<String>) -> PyResult<Self> {
         leo3::with_lean(|lean| -> LeanResult<Self> {
-            let mut metam = match &module {
+            let metam = match &module {
                 Some(m) if m.ends_with(".lean") => {
                     let src = std::fs::read_to_string(m).map_err(|e| {
                         LeanError::other(&format!("cannot read {m}: {e}"))
@@ -261,7 +261,7 @@ impl Repl {
             let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), tactic)?;
             // Branch from the target state's Meta.State snapshot (None →
             // run_tactic wraps metam.meta_state() in a fresh ref).
-            metam.replace_meta_state(unsafe { st.meta_state.bind(lean).cast() });
+            metam.replace_meta_state(st.meta_state.bind(lean).cast());
             let outcome = run_tactic(&mut metam, &goal, &stx, None)?;
             // `Elab.runTactic` returns only the goals produced by the tactic
             // run itself; the source state's OTHER goals (multi-goal states
@@ -402,78 +402,6 @@ fn leo3_name_to_string<'l>(
     }
 }
 
-/// Parse a command string in the `command` parser category.
-fn parse_command<'l>(
-    lean: Lean<'l>,
-    env: &LeanBound<'l, LeanEnvironment>,
-    input: &str,
-) -> LeanResult<LeanBound<'l, LeanExpr>> {
-    unsafe {
-        let cat = LeanName::from_str(lean, "command")?;
-        let input_obj = LeanString::mk(lean, input)?;
-        let file = LeanString::mk(lean, "<stdin>")?;
-
-        let result = leo3_apply_curried(
-            leo3::ffi::meta::repl::lean_parser_run_parser_category as *mut std::ffi::c_void,
-            4,
-            &[
-                {
-                    ffi::lean_inc(env.as_ptr());
-                    env.as_ptr()
-                },
-                cat.into_ptr(),
-                input_obj.into_ptr(),
-                file.into_ptr(),
-            ],
-        );
-        if ffi::lean_obj_tag(result) == 1 {
-            let syntax = ffi::lean_ctor_get(result, 0) as *mut ffi::lean_object;
-            ffi::lean_inc(syntax);
-            ffi::lean_dec(result);
-            Ok(LeanBound::from_owned_ptr(lean, syntax))
-        } else {
-            let err = ffi::lean_ctor_get(result, 0) as *mut ffi::lean_object;
-            let c_str = ffi::inline::lean_string_cstr(err);
-            let message = if c_str.is_null() {
-                "<unprintable>".to_string()
-            } else {
-                std::ffi::CStr::from_ptr(c_str).to_string_lossy().into_owned()
-            };
-            ffi::lean_dec(result);
-            Err(LeanError::other(format!("command parse error: {message}").as_str()))
-        }
-    }
-}
-
-/// Apply a curried Lean function object/code entry with `arity` arguments
-/// (mirrors leo3's internal helper; `l_` symbols are code entries or closure
-/// objects, detected by tag).
-unsafe fn leo3_apply_curried(
-    fn_ptr: *mut std::ffi::c_void,
-    arity: usize,
-    args: &[*mut ffi::lean_object],
-) -> *mut ffi::lean_object {
-    debug_assert_eq!(args.len(), arity);
-    let fn_obj = fn_ptr as *mut ffi::lean_object;
-    if ffi::inline::lean_is_closure(fn_obj) {
-        match arity {
-            1 => ffi::closure::lean_apply_1(fn_obj, args[0]),
-            2 => ffi::closure::lean_apply_2(fn_obj, args[0], args[1]),
-            3 => ffi::closure::lean_apply_3(fn_obj, args[0], args[1], args[2]),
-            4 => ffi::closure::lean_apply_4(fn_obj, args[0], args[1], args[2], args[3]),
-            _ => unreachable!(),
-        }
-    } else {
-        let closure = ffi::inline::lean_alloc_closure(fn_ptr, arity as u32, 0);
-        match arity {
-            1 => ffi::closure::lean_apply_1(closure, args[0]),
-            2 => ffi::closure::lean_apply_2(closure, args[0], args[1]),
-            3 => ffi::closure::lean_apply_3(closure, args[0], args[1], args[2]),
-            4 => ffi::closure::lean_apply_4(closure, args[0], args[1], args[2], args[3]),
-            _ => unreachable!(),
-        }
-    }
-}
 
 /// `leotower._leotower` — the native extension module.
 #[pymodule]
