@@ -101,6 +101,40 @@ def test_run_tac_goal_selection_arbitrary_order():
     t2 = repl.run_tac(t, "simp only [Nat.zero_add, Nat.add_zero]")
     assert repl.get_num_goals(t2) == 0
 
+def test_query_old_state_after_session_advances():
+    """get_goals/get_goal_pp must work on any replay state, not just the
+    session's latest. Advancing the session (run_tac on a descendant, closing
+    goals, or branching onto an unrelated proof) must not invalidate
+    re-querying an earlier state: goal lookups resolve the goal's metavariable
+    through the session's meta state, which retains every mvar decl ever
+    created, so old-state goals stay resolvable (and identically rendered)
+    even after their proof has closed. This defends the state-isolation
+    invariant that re-querying a state is stable under later session advances.
+    """
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n m")
+    s2 = repl.run_tac(s1, "induction n")  # 2 goals: base + step
+    # Snapshot the two goals on s2 BEFORE the session advances.
+    base_pp = repl.get_goal_pp(s2, 0)
+    step_pp = repl.get_goal_pp(s2, 1)
+    assert "0 + m" in base_pp
+    assert "n" in step_pp
+    # Advance the session: close the base goal. The session's latest meta
+    # state now branches off s2 and no longer contains s2's base-goal mvar.
+    s3 = repl.run_tac(s2, "simp only [Nat.zero_add, Nat.add_zero]", goal_idx=0)
+    assert repl.get_num_goals(s3) == 1
+    # Re-query the OLD state s2 — must still see both goals and match the
+    # snapshot, proving goal lookups are state-isolated.
+    goals = repl.get_goals(s2)
+    assert len(goals) == 2
+    assert repl.get_goal_pp(s2, 0) == base_pp
+    assert repl.get_goal_pp(s2, 1) == step_pp
+    # And get_goals on the ADVANCED state s3 reflects only the step goal.
+    goals3 = repl.get_goals(s3)
+    assert len(goals3) == 1
+    assert "n" in repl.get_goal_pp(s3, 0)
+
 
 def test_run_tac_goal_idx_out_of_range():
     repl = Repl()
