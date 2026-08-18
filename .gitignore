@@ -18,3 +18,7 @@ Cargo.lock
 
 # pytest
 .pytest_cache/
+
+# Downloaded Lean toolchain (Format.pretty name verification scratch)
+lean-4.20.0-linux/
+lean-4.20.0-linux.tar.zst
