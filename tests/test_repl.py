@@ -384,3 +384,38 @@ def test_repl_mathlib_import_and_tactics():
             os.environ.pop("LEAN_PATH", None)
         else:
             os.environ["LEAN_PATH"] = old
+
+
+def test_run_tacs_applies_sequence():
+    """run_tacs applies a tactic sequence in order, one call end to end."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    # intro -> induction -> close base -> close step, all in a single call.
+    s_final = repl.run_tacs(
+        s0,
+        ["intro n m", "induction n",
+         "simp only [Nat.zero_add, Nat.add_zero]",
+         "simp only [Nat.add_comm, Nat.add_succ]"],
+    )
+    assert repl.get_num_goals(s_final) == 0
+
+
+def test_run_tacs_empty_returns_same_state():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    assert repl.run_tacs(s0, []) == s0
+
+
+def test_run_tacs_failure_raises_and_session_survives():
+    """A failing tactic in the middle raises RuntimeError; the states that
+    were produced before the failure are still queryable."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tacs(s0, ["intro n m"])
+    assert repl.get_num_goals(s1) == 1
+    with pytest.raises(RuntimeError):
+        # "intro n m" already introduced both vars; re-introducing fails.
+        repl.run_tacs(s1, ["intro n m", "rfl"])
+    # The session stays usable after the error.
+    s2 = repl.run_tac(s1, "induction n")
+    assert repl.get_num_goals(s2) == 2

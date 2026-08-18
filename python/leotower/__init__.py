@@ -113,6 +113,20 @@ class Repl:
     def get_goal_pp(self, state: int, goal_idx: int = 0) -> str:
         return self._repl.get_goal_pp(state, goal_idx)
 
+    def run_tacs(self, state: int, tactics: "list[str]", goal_idx: int = 0) -> int:
+        """Apply a sequence of tactics in order to the ``goal_idx``-th goal,
+        starting from ``state``; returns the final state id.  This is the
+        replay/RL loop idiom — apply ``[t1, t2, ...]`` without threading
+        intermediate state ids by hand.  Tactics are applied left to right;
+        the first one to fail raises :class:`RuntimeError` and the returned
+        state is that of the last successful tactic (the session stays
+        usable).  If ``tactics`` is empty, ``state`` is returned unchanged.
+        """
+        cur = state
+        for tac in tactics:
+            cur = self.run_tac(cur, tac, goal_idx)
+        return cur
+
     # -- environment queries ------------------------------------------------
     def env_has_const(self, name: str) -> bool:
         return self._repl.env_has_const(name)
