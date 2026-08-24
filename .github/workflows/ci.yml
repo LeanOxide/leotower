@@ -136,6 +136,30 @@ jobs:
         working-directory: leotower
         run: uv run --no-sync maturin develop
 
+      # TEMP diagnostic: why does _leotower.pyd fail to load on Windows?
+      - name: Diagnose Windows DLL loading
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: leotower
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import os, ctypes
+          lean_bin = os.path.join(os.environ["LEAN_HOME"], "bin")
+          entries = [e for e in os.environ["PATH"].split(os.pathsep) if "elan" in e.lower()]
+          print("elan PATH entries:", entries)
+          print("expected entry present:", any(e.lower().replace(os.sep, "/") == lean_bin.lower().replace(os.sep, "/") for e in entries))
+          print("DLL exists at expected path:", os.path.exists(os.path.join(lean_bin, "libleanshared.dll")))
+          try:
+              ctypes.CDLL(os.path.join(lean_bin, "libleanshared.dll"))
+              print("direct-path load: OK")
+          except OSError as e:
+              print("direct-path load FAILED:", e)
+          try:
+              ctypes.CDLL("libleanshared.dll")
+              print("by-name (PATH) load: OK")
+          except OSError as e:
+              print("by-name (PATH) load FAILED:", e)
+          EOF
       - name: Run tests
         shell: bash
         working-directory: leotower
