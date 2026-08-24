@@ -159,6 +159,11 @@ Workflows live in `.github/workflows/`:
   `leo3` repo as a sibling of the `leotower` checkout (tracking `main`;
   override the ref with the `leo3_ref` dispatch input to test against a
   leo3 branch or commit).
+  On macOS the test step sets `DYLD_LIBRARY_PATH` to the elan
+  toolchain's Lean lib dir: the built extension references Lean's
+  dylibs via `@rpath` without an embedded `LC_RPATH`, so dyld needs
+  the hint to find them (the runtime mechanism leo3 documents for
+  macOS).
 - **`release.yml`** — on version tags (`v*`) or manual dispatch. Builds
   `maturin` wheels for Linux x86_64, macOS x86_64/arm64, and Windows
   amd64, plus the sdist, then publishes to PyPI and creates a GitHub
