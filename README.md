@@ -164,8 +164,10 @@ Workflows live in `.github/workflows/`:
   dylibs via `@rpath` without an embedded `LC_RPATH`, so dyld needs
   the hint to find them (the runtime mechanism leo3 documents for
   macOS).
-  On Windows the test step puts the elan toolchain's `bin` dir (where
-  Lean's DLLs live) on `PATH` so the extension can load them.
+  On Windows `import leotower` registers the Lean toolchain's `bin`
+  dir (from `LEAN_HOME`, or the elan toolchains under
+  `~/.elan/toolchains`) as a DLL search path, since the Windows
+  loader does not reliably find Lean's DLLs via `PATH`.
 - **`release.yml`** — on version tags (`v*`) or manual dispatch. Builds
   `maturin` wheels for Linux x86_64, macOS x86_64/arm64, and Windows
   amd64, plus the sdist, then publishes to PyPI and creates a GitHub

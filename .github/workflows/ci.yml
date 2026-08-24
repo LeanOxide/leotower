@@ -107,21 +107,17 @@ jobs:
           lean --version
           lake --version
 
-      # On Windows the Lean DLLs must be on PATH so the extension can
-      # load them at test time. The entry must use pure backslashes:
-      # the Windows DLL loader does not resolve forward-slash or mixed
-      # PATH entries (verified in CI; shells normalize on their own,
-      # which is why the elan lookup worked but DLL loads did not).
-      - name: Configure Lean library path
+      # Expose the elan toolchain root. On macOS the test step points
+      # DYLD_LIBRARY_PATH at its lean lib dir (the extension references
+      # Lean dylibs via @rpath without an embedded LC_RPATH); on
+      # Windows the leotower package registers $LEAN_HOME/bin (and the
+      # elan toolchain bin dirs) as a DLL search path at import time.
+      - name: Locate Lean toolchain
         shell: bash
         run: |
           LEAN_BIN=$(elan which lean)
           LEAN_HOME=$(dirname "$(dirname "$LEAN_BIN")")
           echo "LEAN_HOME=$LEAN_HOME" >> $GITHUB_ENV
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            # Lean DLLs live in bin/ and are found via PATH
-            printf '%s\n' "${LEAN_HOME}/bin" | sed 's|/|\\|g' >> $GITHUB_PATH
-          fi
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
@@ -138,31 +134,6 @@ jobs:
       - name: Build extension
         working-directory: leotower
         run: uv run --no-sync maturin develop
-      # TEMP diagnostic (removed once Windows is green): Win32-level
-      # DLL search analysis.
-      - name: Diagnose Windows DLL loading
-        if: runner.os == 'Windows'
-        shell: bash
-        working-directory: leotower
-        run: |
-          uv run --no-sync python - <<'EOF'
-          import ctypes, os
-          k = ctypes.windll.kernel32
-          lean_bin = os.path.join(os.environ["LEAN_HOME"], "bin")
-          out = []
-          buf = ctypes.create_string_buffer(32768)
-          k.SearchPathW(None, "libleanshared.dll", None, buf, 32768)
-          out.append("SearchPathW result: " + repr(buf.value))
-          ctypes.set_last_error(True)
-          h = k.LoadLibraryW("libleanshared.dll")
-          out.append(f"LoadLibraryW by-name: {'OK' if h else 'FAILED'} winerror={ctypes.get_last_error()}")
-          k.SetDllDirectoryW(lean_bin)
-          h = k.LoadLibraryW("libleanshared.dll")
-          out.append(f"LoadLibraryW by-name after SetDllDirectoryW: {'OK' if h else 'FAILED'} winerror={ctypes.get_last_error()}")
-          out.append(f"PATH length: {len(os.environ['PATH'])}")
-          out.append(f"entries: {len(os.environ['PATH'].split(os.pathsep))}")
-          print("\n".join(out))
-          EOF
 
       - name: Run tests
         shell: bash
