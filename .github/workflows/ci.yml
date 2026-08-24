@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      leo3_ref:
+        description: "leo3 branch/tag/commit to build against"
+        required: false
+        default: "main"
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-test:
+    name: Build & Test (${{ matrix.target.os }}, Python ${{ matrix.target.python }})
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: ubuntu-24.04
+            python: "3.12"
+          - os: ubuntu-24.04
+            python: "3.13"
+          - os: macos-15-intel
+            python: "3.12"
+          - os: macos-15
+            python: "3.12"
+          - os: windows-latest
+            python: "3.12"
+    steps:
+      - name: Checkout leotower
+        uses: actions/checkout@v6
+        with:
+          path: leotower
+
+      # leo3 is a local path dependency (Cargo.toml: leo3 = { path =
+      # "../leo3/leo3" }), so the leo3 repo must sit next to the leotower
+      # checkout. It tracks main by default; override with the leo3_ref
+      # workflow_dispatch input to test against a leo3 branch or commit.
+      - name: Checkout leo3 (sibling)
+        uses: actions/checkout@v6
+        with:
+          repository: LeanOxide/leo3
+          ref: ${{ inputs.leo3_ref || 'main' }}
+          fetch-depth: 1
+          path: leo3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: leotower
+
+      - name: Read pinned Lean toolchain
+        id: lean
+        shell: bash
+        run: |
+          TOOLCHAIN=$(tr -d '\r\n' < leotower/lean-toolchain)
+          [[ "$TOOLCHAIN" =~ ^leanprover/lean4: ]] || { echo "::error::unexpected lean-toolchain: $TOOLCHAIN" >&2; exit 1; }
+          echo "toolchain=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+
+      - name: Install elan
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-pc-windows-msvc.zip -o elan.zip
+            unzip elan.zip
+            ./elan-init.exe -y --default-toolchain ${{ steps.lean.outputs.toolchain }}
+            rm -f elan-init.exe elan.zip
+          else
+            echo "::group::Elan Installation Output"
+            set -o pipefail
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain ${{ steps.lean.outputs.toolchain }}
+            rm -f elan-init
+            echo "::endgroup::"
+          fi
+
+      - name: Setup Lean PATH
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            echo "$USERPROFILE/.elan/bin" >> $GITHUB_PATH
+          else
+            echo "$HOME/.elan/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Verify Lean installation
+        shell: bash
+        working-directory: leotower
+        run: |
+          lean --version
+          lake --version
+
+      # Expose the elan toolchain root. On macOS the test step points
+      # DYLD_LIBRARY_PATH at its lean lib dir (the extension references
+      # Lean dylibs via @rpath without an embedded LC_RPATH); on
+      # Windows the leotower package registers $LEAN_HOME/bin (and the
+      # elan toolchain bin dirs) as a DLL search path at import time.
+      - name: Locate Lean toolchain
+        shell: bash
+        run: |
+          LEAN_BIN=$(elan which lean)
+          LEAN_HOME=$(dirname "$(dirname "$LEAN_BIN")")
+          echo "LEAN_HOME=$LEAN_HOME" >> $GITHUB_ENV
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # --no-install-project: uv would otherwise build the project
+      # (editable) here; the explicit maturin develop step below is the
+      # build.
+      - name: Install dependencies
+        working-directory: leotower
+        run: uv sync --frozen --no-install-project --python ${{ matrix.target.python }}
+
+      - name: Build extension
+        working-directory: leotower
+        run: uv run --no-sync maturin develop
+      - name: Run tests
+        shell: bash
+        working-directory: leotower
+        run: |
+          # The extension references Lean dylibs via @rpath without an
+          # embedded LC_RPATH, so point dyld at the elan toolchain's
+          # lean lib dir (the runtime mechanism leo3 documents for macOS).
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export DYLD_LIBRARY_PATH="$LEAN_HOME/lib/lean"
+          fi
+          uv run --no-sync pytest -v

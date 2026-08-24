@@ -146,3 +146,53 @@ uv run python bench/benchmark.py
 
 `Cargo.toml` pins `leo3` to the local `../leo3/leo3` crate for development;
 switch to the crates.io release for published builds.
+
+## CI/CD
+
+Workflows live in `.github/workflows/`:
+
+- **`ci.yml`** — on push to `main`, on every PR, and on manual dispatch.
+  Builds the extension and runs the pytest suite on
+  Ubuntu (Python 3.12 + 3.13), macOS (x86_64 + arm64), and Windows
+  (Python 3.12), against the Lean toolchain pinned in `lean-toolchain`.
+  Because `leo3` is a local path dependency, the workflow checks out the
+  `leo3` repo as a sibling of the `leotower` checkout (tracking `main`;
+  override the ref with the `leo3_ref` dispatch input to test against a
+  leo3 branch or commit).
+  On macOS the test step sets `DYLD_LIBRARY_PATH` to the elan
+  toolchain's Lean lib dir: the built extension references Lean's
+  dylibs via `@rpath` without an embedded `LC_RPATH`, so dyld needs
+  the hint to find them (the runtime mechanism leo3 documents for
+  macOS).
+  On Windows `import leotower` registers the Lean toolchain's `bin`
+  dir (from `LEAN_HOME`, or the elan toolchains under
+  `~/.elan/toolchains`) as a DLL search path, since the Windows
+  loader does not reliably find Lean's DLLs via `PATH`.
+- **`release.yml`** — on version tags (`v*`) or manual dispatch. Builds
+  `maturin` wheels for Linux x86_64 and macOS x86_64/arm64, plus the
+  sdist, then publishes to PyPI and creates a GitHub Release with the
+  artifacts. Manual dispatches only publish when the `publish` input is
+  set. A `resolve-leo3` job resolves the leo3 ref to a single full
+  commit SHA before any build, and every build job (wheels matrix +
+  sdist) checks out that exact SHA, so all artifacts in one release use
+  the same leo3 revision.
+  No Windows wheel is published yet: constructing `Repl()` aborts the
+  process on Windows (leo3 issue, tracked as W-395). Windows is
+  covered by the CI smoke tests only (build + import + session tests;
+  the Repl test suite is skipped there until W-395 is fixed).
+
+Published builds resolve the `leo3` dependency two ways:
+
+- **git mode (default)** — build against `leo3` at `leo3_ref` (default
+  `main`); the `resolve-leo3` job resolves the ref to a full commit
+  SHA and every build job checks that SHA out as a sibling. The sdist
+  pins leo3 to that commit so it builds standalone.
+- **crates.io mode** — set the `leo3_pin` input to a published leo3
+  version and both wheels and the sdist pin the crates.io release, per
+  the note in `Cargo.toml`. Note: leotower currently uses APIs that only
+  exist on leo3 `main` (`leo3::meta::repl`, `MetaMContext` snapshot
+  methods), so no published leo3 version compiles yet — use git mode
+  until leo3 ships a release with those APIs.
+
+PyPI publishing requires a `PYPI_API_TOKEN` repository secret (an API token
+for the PyPI project).

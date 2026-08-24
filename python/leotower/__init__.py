@@ -13,7 +13,47 @@ call from any Python thread while it holds the GIL: each OS thread attaches
 to the shared Lean runtime on first use.
 """
 
+import os
+import sys
+
 from contextlib import contextmanager
+
+
+def _extend_windows_dll_search_path() -> None:
+    """Add the Lean toolchain's bin dir to the DLL search path (Windows).
+
+    The native extension links Lean's shared libraries
+    (``libleanshared*.dll``, ``libInit_shared.dll``), which live in the
+    Lean toolchain's ``bin`` dir.  The Windows loader does not reliably
+    resolve them from ``PATH`` (verified on GitHub-hosted runners),
+    whereas directories registered with :func:`os.add_dll_directory`
+    always do — and the registration is what end users need too, since
+    the published wheel does not bundle the Lean DLLs.
+
+    Candidates: ``$LEAN_HOME/bin``, then every elan toolchain dir under
+    ``%USERPROFILE%\\.elan\\toolchains``.  Only directories that
+    actually contain ``libleanshared.dll`` are added.
+    """
+    if sys.platform != "win32":
+        return
+    candidates = []
+    lean_home = os.environ.get("LEAN_HOME")
+    if lean_home:
+        candidates.append(os.path.join(lean_home, "bin"))
+    userprofile = os.environ.get("USERPROFILE")
+    if userprofile:
+        toolchains = os.path.join(userprofile, ".elan", "toolchains")
+        if os.path.isdir(toolchains):
+            candidates.extend(
+                os.path.join(toolchains, name, "bin")
+                for name in sorted(os.listdir(toolchains))
+            )
+    for directory in candidates:
+        if os.path.isfile(os.path.join(directory, "libleanshared.dll")):
+            os.add_dll_directory(directory)
+
+
+_extend_windows_dll_search_path()
 
 from leotower._leotower import LeanSession, prepare_freethreaded_lean
 

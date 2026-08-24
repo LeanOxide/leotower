@@ -1,8 +1,19 @@
 """Repl tests: LeanDojo-compatible replay over the embedded Lean runtime."""
 
+import sys
+
 import pytest
 
 from leotower import Repl
+
+# Windows: constructing Repl() aborts the whole process (misaligned pointer
+# dereference in leo3-ffi, exit 127, no Python traceback) — tracked in W-395.
+# The Windows build + import + LeanSession paths are still exercised by
+# tests/test_leotower.py; re-enable once W-395 lands.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Repl() aborts the process on Windows (W-395)",
+)
 
 
 ADD_COMM = "∀ n m : Nat, n + m = m + n"
