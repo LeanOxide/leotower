@@ -35,9 +35,9 @@ jobs:
             python: "3.12"
           - os: ubuntu-latest
             python: "3.13"
-          - os: macos-14
+          - os: macos-15-intel
             python: "3.12"
-          - os: macos-latest
+          - os: macos-15
             python: "3.12"
           - os: windows-latest
             python: "3.12"
@@ -56,6 +56,7 @@ jobs:
         with:
           repository: LeanOxide/leo3
           ref: ${{ inputs.leo3_ref || 'main' }}
+          fetch-depth: 1
           path: leo3
 
       - name: Install Rust toolchain
@@ -69,7 +70,10 @@ jobs:
       - name: Read pinned Lean toolchain
         id: lean
         shell: bash
-        run: echo "toolchain=$(tr -d '\r\n' < leotower/lean-toolchain)" >> "$GITHUB_OUTPUT"
+        run: |
+          TOOLCHAIN=$(tr -d '\r\n' < leotower/lean-toolchain)
+          [[ "$TOOLCHAIN" =~ ^leanprover/lean4: ]] || { echo "::error::unexpected lean-toolchain: $TOOLCHAIN" >&2; exit 1; }
+          echo "toolchain=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
 
       - name: Install elan
         shell: bash
@@ -120,14 +124,17 @@ jobs:
         with:
           enable-cache: true
 
+      # --no-install-project: uv would otherwise build the project
+      # (editable) here; the explicit maturin develop step below is the
+      # build.
       - name: Install dependencies
         working-directory: leotower
-        run: uv sync --frozen --python ${{ matrix.target.python }}
+        run: uv sync --frozen --no-install-project --python ${{ matrix.target.python }}
 
       - name: Build extension
         working-directory: leotower
-        run: uv run maturin develop
+        run: uv run --no-sync maturin develop
 
       - name: Run tests
         working-directory: leotower
-        run: uv run pytest -v
+        run: uv run --no-sync pytest -v
