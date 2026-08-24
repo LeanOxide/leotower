@@ -31,9 +31,9 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: "3.12"
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             python: "3.13"
           - os: macos-15-intel
             python: "3.12"

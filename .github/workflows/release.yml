@@ -35,6 +35,8 @@ name: Release
 # - Linux aarch64 is not covered: it needs an ARM runner
 #   (ubuntu-24.04-arm) or a cross-compile setup (leo3 supports
 #   LEO3_CROSS_LIB_DIR).
+# - The Windows wheel is not published until W-395 (Repl() aborts the
+#   process on Windows in the leo3 in-process init path) is fixed.
 
 on:
   push:
@@ -77,10 +79,10 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
           - os: macos-15-intel
           - os: macos-15
-          - os: windows-latest
+          # windows-latest: re-add once W-395 is fixed.
     steps:
       - name: Checkout leotower
         uses: actions/checkout@v6
@@ -228,7 +230,7 @@ jobs:
 
   sdist:
     name: Build sdist
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout leotower
@@ -333,7 +335,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: [wheels, sdist]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: ${{ github.event_name == 'push' || inputs.publish }}
     steps:
       - name: Download artifacts
@@ -360,7 +362,7 @@ jobs:
   github-release:
     name: GitHub Release
     needs: [wheels, sdist]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'push'
     permissions:
       contents: write
