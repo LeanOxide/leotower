@@ -108,9 +108,10 @@ jobs:
           lake --version
 
       # On Windows the Lean DLLs must be on PATH so the extension can
-      # load them at test time. The entry is written with forward
-      # slashes: the Windows loader does not resolve mixed
-      # backslash/forward-slash PATH entries (verified in CI).
+      # load them at test time. The entry must use pure backslashes:
+      # the Windows DLL loader does not resolve forward-slash or mixed
+      # PATH entries (verified in CI; shells normalize on their own,
+      # which is why the elan lookup worked but DLL loads did not).
       - name: Configure Lean library path
         shell: bash
         run: |
@@ -119,7 +120,7 @@ jobs:
           echo "LEAN_HOME=$LEAN_HOME" >> $GITHUB_ENV
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Lean DLLs live in bin/ and are found via PATH
-            echo "${LEAN_HOME//\\//}/bin" >> $GITHUB_PATH
+            printf '%s\n' "${LEAN_HOME}/bin" | sed 's|/|\\|g' >> $GITHUB_PATH
           fi
 
       - name: Setup uv
@@ -137,6 +138,23 @@ jobs:
       - name: Build extension
         working-directory: leotower
         run: uv run --no-sync maturin develop
+      # TEMP diagnostic (removed once Windows is green): confirm the
+      # backslash PATH entry and by-name DLL load.
+      - name: Diagnose Windows DLL loading
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: leotower
+        run: |
+          uv run --no-sync python - <<'EOF'
+          import os, ctypes
+          out = ["elan PATH entries: " + repr([e for e in os.environ["PATH"].split(os.pathsep) if "elan" in e.lower()])]
+          try:
+              ctypes.CDLL("libleanshared.dll")
+              out.append("by-name libleanshared.dll: OK")
+          except OSError:
+              out.append("by-name libleanshared.dll: FAILED")
+          print("\n".join(out))
+          EOF
 
       - name: Run tests
         shell: bash
