@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      leo3_ref:
+        description: "leo3 branch/tag/commit to build against"
+        required: false
+        default: "main"
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-test:
+    name: Build & Test (${{ matrix.target.os }}, Python ${{ matrix.target.python }})
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: macos-14
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.12"
+    steps:
+      - name: Checkout leotower
+        uses: actions/checkout@v6
+        with:
+          path: leotower
+
+      # leo3 is a local path dependency (Cargo.toml: leo3 = { path =
+      # "../leo3/leo3" }), so the leo3 repo must sit next to the leotower
+      # checkout. It tracks main by default; override with the leo3_ref
+      # workflow_dispatch input to test against a leo3 branch or commit.
+      - name: Checkout leo3 (sibling)
+        uses: actions/checkout@v6
+        with:
+          repository: LeanOxide/leo3
+          ref: ${{ inputs.leo3_ref || 'main' }}
+          path: leo3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: leotower
+
+      - name: Read pinned Lean toolchain
+        id: lean
+        shell: bash
+        run: echo "toolchain=$(tr -d '\r\n' < leotower/lean-toolchain)" >> "$GITHUB_OUTPUT"
+
+      - name: Install elan
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-pc-windows-msvc.zip -o elan.zip
+            unzip elan.zip
+            ./elan-init.exe -y --default-toolchain ${{ steps.lean.outputs.toolchain }}
+            rm -f elan-init.exe elan.zip
+          else
+            echo "::group::Elan Installation Output"
+            set -o pipefail
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain ${{ steps.lean.outputs.toolchain }}
+            rm -f elan-init
+            echo "::endgroup::"
+          fi
+
+      - name: Setup Lean PATH
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            echo "$USERPROFILE/.elan/bin" >> $GITHUB_PATH
+          else
+            echo "$HOME/.elan/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Verify Lean installation
+        shell: bash
+        working-directory: leotower
+        run: |
+          lean --version
+          lake --version
+
+      # On Windows the Lean DLLs must be on PATH so the embedded runtime
+      # can load them at test time.
+      - name: Configure Lean library path (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: leotower
+        run: |
+          LEAN_BIN=$(elan which lean)
+          LEAN_HOME=$(dirname "$(dirname "$LEAN_BIN")")
+          echo "$LEAN_HOME/bin" >> $GITHUB_PATH
+          echo "LEAN_HOME=$LEAN_HOME" >> $GITHUB_ENV
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: leotower
+        run: uv sync --frozen --python ${{ matrix.target.python }}
+
+      - name: Build extension
+        working-directory: leotower
+        run: uv run maturin develop
+
+      - name: Run tests
+        working-directory: leotower
+        run: uv run pytest -v

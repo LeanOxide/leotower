@@ -1,0 +1,272 @@
+name: Release
+
+# Builds the PyPI artifacts (wheels for each supported platform + sdist) and
+# publishes them. Triggered by version tags (`v*`), or manually via
+# workflow_dispatch (set publish=true to upload to PyPI).
+#
+# leo3 dependency strategy for published builds:
+# - Default (leo3_pin unset): build against leo3 at `leo3_ref` (default
+#   main), checked out as a sibling of leotower. Wheels use the path
+#   dependency as-is; the sdist pins leo3 to the resolved git SHA so it
+#   builds standalone.
+# - Official releases: set `leo3_pin` to a published crates.io version
+#   (e.g. 0.3.2) — the dependency is rewritten to the crates.io release
+#   per the Cargo.toml note. NOTE: leotower currently uses APIs that only
+#   exist on leo3 main (leo3::meta::repl, MetaMContext::meta_state_snapshot
+#   / replace_env), so no published leo3 version is compatible yet — 0.3.1
+#   fails to compile. Use the default git mode until leo3 0.3.2+ ships.
+#
+# Linux aarch64 is not covered: it needs an ARM runner (ubuntu-24.04-arm)
+# or a cross-compile setup (leo3 supports LEO3_CROSS_LIB_DIR).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload artifacts to PyPI (requires the PYPI_API_TOKEN secret)"
+        type: boolean
+        default: false
+      leo3_ref:
+        description: "leo3 branch/tag/commit to build against (git mode)"
+        required: false
+        default: "main"
+      leo3_pin:
+        description: "leo3 crates.io version (empty = build from git at leo3_ref)"
+        required: false
+        default: ""
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Keep in sync with leotower/lean-toolchain.
+  LEAN_TOOLCHAIN: leanprover/lean4:v4.25.2
+
+jobs:
+  wheels:
+    name: Build wheels (${{ matrix.target.os }})
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: ubuntu-latest
+          - os: macos-14
+          - os: macos-latest
+          - os: windows-latest
+    steps:
+      - name: Checkout leotower
+        uses: actions/checkout@v6
+        with:
+          path: leotower
+
+      # Git mode: leo3 is a local path dependency (Cargo.toml: leo3 =
+      # { path = "../leo3/leo3" }), so the leo3 repo must sit next to the
+      # leotower checkout.
+      - name: Checkout leo3 (sibling)
+        if: ${{ (inputs.leo3_pin || 'git') == 'git' }}
+        uses: actions/checkout@v6
+        with:
+          repository: LeanOxide/leo3
+          ref: ${{ inputs.leo3_ref || 'main' }}
+          path: leo3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: leotower
+
+      # The leo3 build script resolves the Lean toolchain, so it is needed
+      # in both dependency modes.
+      - name: Install elan
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-pc-windows-msvc.zip -o elan.zip
+            unzip elan.zip
+            ./elan-init.exe -y --default-toolchain ${{ env.LEAN_TOOLCHAIN }}
+            rm -f elan-init.exe elan.zip
+          else
+            echo "::group::Elan Installation Output"
+            set -o pipefail
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain ${{ env.LEAN_TOOLCHAIN }}
+            rm -f elan-init
+            echo "::endgroup::"
+          fi
+
+      - name: Setup Lean PATH
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            echo "$USERPROFILE/.elan/bin" >> $GITHUB_PATH
+          else
+            echo "$HOME/.elan/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Verify Lean installation
+        shell: bash
+        working-directory: leotower
+        run: |
+          lean --version
+          lake --version
+
+      # On Windows the Lean DLLs must be on PATH so the embedded runtime
+      # can load them at test time.
+      - name: Configure Lean library path (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: leotower
+        run: |
+          LEAN_BIN=$(elan which lean)
+          LEAN_HOME=$(dirname "$(dirname "$LEAN_BIN")")
+          echo "$LEAN_HOME/bin" >> $GITHUB_PATH
+          echo "LEAN_HOME=$LEAN_HOME" >> $GITHUB_ENV
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: leotower
+        run: uv sync --frozen --python 3.12
+
+      # Crates.io mode: pin the published leo3 release (official builds).
+      - name: Pin leo3 to the crates.io release
+        if: ${{ (inputs.leo3_pin || 'git') != 'git' }}
+        shell: bash
+        working-directory: leotower
+        run: |
+          sed -i "s|^leo3 = .*\$|leo3 = { version = \"${{ inputs.leo3_pin }}\", features = [\"meta\"] }|" Cargo.toml
+          grep '^leo3' Cargo.toml
+
+      - name: Build wheels
+        working-directory: leotower
+        run: uv run maturin build --release -o dist
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheels-${{ matrix.target.os }}
+          path: leotower/dist/*.whl
+
+  sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout leotower
+        uses: actions/checkout@v6
+        with:
+          path: leotower
+
+      # Git mode: resolve leo3_ref to a commit so the sdist can pin it.
+      - name: Resolve leo3 commit
+        id: leo3
+        if: ${{ (inputs.leo3_pin || 'git') == 'git' }}
+        uses: actions/checkout@v6
+        with:
+          repository: LeanOxide/leo3
+          ref: ${{ inputs.leo3_ref || 'main' }}
+      - name: Record leo3 SHA
+        if: ${{ (inputs.leo3_pin || 'git') == 'git' }}
+        shell: bash
+        run: echo "sha=$(git -C leo3 rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: leotower
+        run: uv sync --frozen --python 3.12
+
+      # Git mode: the sdist must build standalone, so pin leo3 to the
+      # resolved git commit (the path dependency is only valid in the
+      # sibling-checkout dev layout).
+      - name: Pin leo3 to the resolved git commit
+        if: ${{ (inputs.leo3_pin || 'git') == 'git' }}
+        shell: bash
+        working-directory: leotower
+        run: |
+          sed -i "s|^leo3 = .*\$|leo3 = { git = \"https://github.com/LeanOxide/leo3.git\", rev = \"${{ steps.leo3.sha }}\", features = [\"meta\"] }|" Cargo.toml
+          grep '^leo3' Cargo.toml
+
+      # Crates.io mode: same pin as the official wheel builds.
+      - name: Pin leo3 to the crates.io release
+        if: ${{ (inputs.leo3_pin || 'git') != 'git' }}
+        shell: bash
+        working-directory: leotower
+        run: |
+          sed -i "s|^leo3 = .*\$|leo3 = { version = \"${{ inputs.leo3_pin }}\", features = [\"meta\"] }|" Cargo.toml
+          grep '^leo3' Cargo.toml
+      - name: Build sdist (no Rust/Lean toolchain needed)
+        working-directory: leotower
+        run: uv run maturin sdist -o dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v6
+        with:
+          name: sdist
+          path: leotower/dist/*.tar.gz
+
+  publish:
+    name: Publish to PyPI
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || inputs.publish }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install twine
+        run: uv tool install twine
+
+      - name: Check artifact metadata
+        run: twine check dist/*
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload --non-interactive dist/*
+
+  github-release:
+    name: GitHub Release
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
