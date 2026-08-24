@@ -117,9 +117,11 @@ jobs:
   wheels:
     needs: [resolve-leo3]
     # A skipped upstream job (crates.io mode: resolve-leo3 does not run)
-    # would otherwise skip this job too; the explicit if releases that
-    # block while still requiring a successful resolve in git mode.
-    if: ${{ (inputs.leo3_pin || 'git') == 'git' && needs.resolve-leo3.result == 'success' || (inputs.leo3_pin || 'git') != 'git' }}
+    # skips downstream jobs that have no overriding if, and a plain
+    # boolean if does not override that gating — only always() does.
+    # So: in git mode require resolve-leo3 to have succeeded; in
+    # crates.io mode (resolve not needed) run unconditionally.
+    if: ${{ always() && ((inputs.leo3_pin || 'git') != 'git' || needs.resolve-leo3.result == 'success') }}
     name: Build wheels (${{ matrix.target.os }})
     runs-on: ${{ matrix.target.os }}
     timeout-minutes: 60
@@ -280,9 +282,9 @@ jobs:
 
   sdist:
     needs: [resolve-leo3]
-    # See the if on the wheels job: a skipped resolve-leo3 (crates.io
-    # mode) must not skip the sdist build.
-    if: ${{ (inputs.leo3_pin || 'git') == 'git' && needs.resolve-leo3.result == 'success' || (inputs.leo3_pin || 'git') != 'git' }}
+    # See the if on the wheels job: always() is required to override
+    # the skipped-dependency skip in crates.io mode.
+    if: ${{ always() && ((inputs.leo3_pin || 'git') != 'git' || needs.resolve-leo3.result == 'success') }}
     name: Build sdist
     runs-on: ubuntu-24.04
     timeout-minutes: 15
