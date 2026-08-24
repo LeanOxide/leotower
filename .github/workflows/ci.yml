@@ -110,6 +110,7 @@ jobs:
       # On Windows the Lean DLLs must be on PATH so the embedded runtime
       # can load them at test time.
       - name: Configure Lean library path
+        shell: bash
         run: |
           LEAN_BIN=$(elan which lean)
           LEAN_HOME=$(dirname "$(dirname "$LEAN_BIN")")
@@ -136,6 +137,7 @@ jobs:
         run: uv run --no-sync maturin develop
 
       - name: Run tests
+        shell: bash
         working-directory: leotower
         run: |
           # The extension references Lean dylibs via @rpath without an
