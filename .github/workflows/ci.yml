@@ -134,6 +134,33 @@ jobs:
       - name: Build extension
         working-directory: leotower
         run: uv run --no-sync maturin develop
+      # TEMP probes (removed once Windows is green).
+      - name: Probe standalone Repl init
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: leotower
+        run: |
+          rc=0
+          uv run --no-sync python -X faulthandler -c "
+          import leotower
+          print('imported ok', flush=True)
+          r = leotower.Repl()
+          print('repl ok:', r.env_has_const('Nat.add'), flush=True)
+          " || rc=$?
+          echo "PROBE_EXIT=$rc"
+
+      - name: Probe full elaboration via lean.exe
+        if: runner.os == 'Windows'
+        shell: bash
+        working-directory: leotower
+        run: |
+          rc=0
+          echo 'def probe : 1 + 1 = 2 := by rfl' > probe.lean
+          lean probe.lean || rc=$?
+          echo "LEAN_EXIT=$rc"
+          echo "--- icu in lean toolchain ---"
+          ls "$LEAN_HOME/bin" | grep -i icu || echo "no icu files in lean bin"
+          powershell -NoProfile -Command "(Get-Item 'C:\Windows\System32\icu.dll').VersionInfo | Format-List FileVersion,ProductVersion"
 
       - name: Run tests
         shell: bash
