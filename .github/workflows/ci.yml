@@ -143,47 +143,18 @@ jobs:
         working-directory: leotower
         run: |
           uv run --no-sync python - <<'EOF'
-          import os, ctypes, struct, glob
+          import os, ctypes
           lean_bin = os.path.join(os.environ["LEAN_HOME"], "bin")
           out = []
-          try:
-              ctypes.CDLL("libleanshared.dll")
-              out.append("by-name (PATH) load: OK")
-          except OSError as e:
-              out.append(f"by-name (PATH) load FAILED: {e}")
-          for pyd in glob.glob(os.path.join("python", "leotower", "_leotower*.pyd")):
-              with open(pyd, "rb") as f:
-                  data = f.read()
-              pe_off = struct.unpack_from("<I", data, 0x3C)[0]
-              n_sec = struct.unpack_from("<H", data, pe_off + 6)[0]
-              opt = pe_off + 24
-              magic = struct.unpack_from("<H", data, opt)[0]
-              dd = opt + (112 if magic == 0x20b else 96)
-              rva, size = struct.unpack_from("<II", data, dd + 8)
-              sec_start = opt + (240 if magic == 0x20b else 224)
-              sections = []
-              for i in range(n_sec):
-                  vs, va, rs, ro = struct.unpack_from("<IIII", data, sec_start + i * 40 + 8)
-                  sections.append((va, vs, rs, ro))
-
-              def to_off(r):
-                  for va, vs, rs, ro in sections:
-                      if va <= r < va + max(vs, rs):
-                          return ro + (r - va)
-                  return None
-
-              ioff = to_off(rva)
-              imports = []
-              i = 0
-              while True:
-                  e = struct.unpack_from("<IIII", data, ioff + i * 20)
-                  if e[0] == 0 and e[3] == 0:
-                      break
-                  no = to_off(e[3])
-                  end = data.index(b"\x00", no)
-                  imports.append(data[no:end].decode())
-                  i += 1
-              out.append(f"{os.path.basename(pyd)} imports: {imports}")
+          out.append(f"lean_bin: {lean_bin}")
+          root = os.environ.get("SystemRoot", "C:/Windows")
+          out.append(f"System32 icu.dll exists: {os.path.exists(os.path.join(root, 'System32', 'icu.dll'))}")
+          for name in ["icu.dll", "libInit_shared.dll", "libleanshared_1.dll", "libleanshared_2.dll", "libleanshared.dll"]:
+              try:
+                  ctypes.CDLL(name)
+                  out.append(f"by-name {name}: OK")
+              except OSError:
+                  out.append(f"by-name {name}: FAILED")
           print("\n".join(out))
           EOF
       - name: Run tests
