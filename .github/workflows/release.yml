@@ -6,11 +6,15 @@ name: Release
 #
 # leo3 dependency strategy for published builds:
 # - Default (leo3_pin unset): build against leo3 at `leo3_ref` (default
-#   main), checked out as a sibling of leotower. Wheels use the path
-#   dependency as-is; the sdist pins leo3 to the resolved git SHA (from
-#   the checkout's `commit` output, verified as a full 40-hex SHA) so it
+#   main). A dedicated `resolve-leo3` job resolves the ref to a single
+#   full commit SHA via `git ls-remote` BEFORE any build starts; every
+#   build job (wheels matrix legs + sdist) checks out that exact SHA as
+#   a sibling of leotower, so all artifacts in one release are
+#   guaranteed to use the same leo3 revision (a mutable ref such as
+#   main can no longer move between legs). Wheels use the path
+#   dependency as-is; the sdist pins leo3 to the resolved SHA so it
 #   builds standalone. The resolved leo3 commit is recorded in the job
-#   summary and the GitHub release body.
+#   summaries and the GitHub release body.
 # - Official releases: set `leo3_pin` to a published crates.io version
 #   (e.g. 0.3.2) — the dependency is rewritten to the crates.io release
 #   per the Cargo.toml note. NOTE: leotower currently uses APIs that only
@@ -69,7 +73,49 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Resolve the leo3 ref to one full commit SHA before any build, so
+  # every artifact in the release is built against the same revision
+  # even if the ref (e.g. main) moves during the run.
+  resolve-leo3:
+    name: Resolve leo3 commit
+    if: ${{ (inputs.leo3_pin || 'git') == 'git' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - name: Resolve ref to commit SHA
+        id: resolve
+        shell: bash
+        env:
+          REF: ${{ inputs.leo3_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+            # Already a full commit SHA: nothing to resolve.
+            SHA="$REF"
+          else
+            # Ask for the branch, the tag, and the peeled tag (annotated
+            # tags: use the peeled commit, matching actions/checkout).
+            OUT=$(git ls-remote https://github.com/LeanOxide/leo3.git \
+              "refs/heads/$REF" "refs/tags/$REF" "refs/tags/$REF^{}")
+            pick() { printf '%s\n' "$OUT" | awk -v r="$1" '$2 == r { print $1 }' | head -n1; }
+            SHA=$(pick "refs/tags/$REF^{}")
+            [ -n "$SHA" ] || SHA=$(pick "refs/tags/$REF")
+            [ -n "$SHA" ] || SHA=$(pick "refs/heads/$REF")
+            [ -n "$SHA" ] || { echo "::error::leo3 ref '$REF' matched no branch, tag, or SHA" >&2; exit 1; }
+          fi
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::leo3 ref '$REF' resolved to non-SHA: '$SHA'" >&2; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          {
+            echo "## leo3 dependency"
+            echo "Resolved [leo3 @ $SHA](https://github.com/LeanOxide/leo3/commit/$SHA) (ref: $REF). All build jobs use this exact commit."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   wheels:
+    needs: [resolve-leo3]
     name: Build wheels (${{ matrix.target.os }})
     runs-on: ${{ matrix.target.os }}
     timeout-minutes: 60
@@ -98,7 +144,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: LeanOxide/leo3
-          ref: ${{ inputs.leo3_ref || 'main' }}
+          ref: ${{ needs.resolve-leo3.outputs.sha }}
           fetch-depth: 1
           path: leo3
 
@@ -229,6 +275,7 @@ jobs:
           path: leotower/dist/*.whl
 
   sdist:
+    needs: [resolve-leo3]
     name: Build sdist
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -245,7 +292,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: LeanOxide/leo3
-          ref: ${{ inputs.leo3_ref || 'main' }}
+          ref: ${{ needs.resolve-leo3.outputs.sha }}
           fetch-depth: 1
           path: leo3
 

@@ -169,16 +169,24 @@ Workflows live in `.github/workflows/`:
   `~/.elan/toolchains`) as a DLL search path, since the Windows
   loader does not reliably find Lean's DLLs via `PATH`.
 - **`release.yml`** — on version tags (`v*`) or manual dispatch. Builds
-  `maturin` wheels for Linux x86_64, macOS x86_64/arm64, and Windows
-  amd64, plus the sdist, then publishes to PyPI and creates a GitHub
-  Release with the artifacts. Manual dispatches only publish when the
-  `publish` input is set.
+  `maturin` wheels for Linux x86_64 and macOS x86_64/arm64, plus the
+  sdist, then publishes to PyPI and creates a GitHub Release with the
+  artifacts. Manual dispatches only publish when the `publish` input is
+  set. A `resolve-leo3` job resolves the leo3 ref to a single full
+  commit SHA before any build, and every build job (wheels matrix +
+  sdist) checks out that exact SHA, so all artifacts in one release use
+  the same leo3 revision.
+  No Windows wheel is published yet: constructing `Repl()` aborts the
+  process on Windows (leo3 issue, tracked as W-395). Windows is
+  covered by the CI smoke tests only (build + import + session tests;
+  the Repl test suite is skipped there until W-395 is fixed).
 
 Published builds resolve the `leo3` dependency two ways:
 
 - **git mode (default)** — build against `leo3` at `leo3_ref` (default
-  `main`), checked out as a sibling for the wheels; the sdist pins leo3
-  to the resolved git commit so it builds standalone.
+  `main`); the `resolve-leo3` job resolves the ref to a full commit
+  SHA and every build job checks that SHA out as a sibling. The sdist
+  pins leo3 to that commit so it builds standalone.
 - **crates.io mode** — set the `leo3_pin` input to a published leo3
   version and both wheels and the sdist pin the crates.io release, per
   the note in `Cargo.toml`. Note: leotower currently uses APIs that only
