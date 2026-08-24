@@ -146,15 +146,33 @@ jobs:
           import os, ctypes
           lean_bin = os.path.join(os.environ["LEAN_HOME"], "bin")
           out = []
+          path_env = os.environ["PATH"]
           out.append(f"lean_bin: {lean_bin}")
-          root = os.environ.get("SystemRoot", "C:/Windows")
-          out.append(f"System32 icu.dll exists: {os.path.exists(os.path.join(root, 'System32', 'icu.dll'))}")
-          for name in ["icu.dll", "libInit_shared.dll", "libleanshared_1.dll", "libleanshared_2.dll", "libleanshared.dll"]:
+          out.append(f"lean_bin in PATH (exact): {lean_bin in path_env}")
+          out.append(f"file exists: {os.path.exists(os.path.join(lean_bin, 'libleanshared.dll'))}")
+          for name in ["libleanshared.dll"]:
               try:
                   ctypes.CDLL(name)
-                  out.append(f"by-name {name}: OK")
-              except OSError:
-                  out.append(f"by-name {name}: FAILED")
+                  out.append(f"1 by-name: OK")
+              except OSError as e:
+                  out.append(f"1 by-name: FAILED")
+          os.chdir(lean_bin)
+          try:
+              ctypes.CDLL("libleanshared.dll")
+              out.append("2 by-name after chdir(lean_bin): OK")
+          except OSError:
+              out.append("2 by-name after chdir(lean_bin): FAILED")
+          os.add_dll_directory(lean_bin)
+          try:
+              ctypes.CDLL("libleanshared.dll")
+              out.append("3 by-name after add_dll_directory: OK")
+          except OSError:
+              out.append("3 by-name after add_dll_directory: FAILED")
+          try:
+              ctypes.CDLL(os.path.join(lean_bin, "libleanshared.dll"))
+              out.append("4 direct path: OK")
+          except OSError as e:
+              out.append(f"4 direct path: FAILED: {e}")
           print("\n".join(out))
           EOF
       - name: Run tests
