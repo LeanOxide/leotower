@@ -145,18 +145,3 @@ jobs:
             export DYLD_LIBRARY_PATH="$LEAN_HOME/lib/lean"
           fi
           uv run --no-sync pytest -v
-      # TEMP: collect the full backtrace for W-395 (removed once W-395
-      # is fixed).
-      - name: Collect Windows Repl crash backtrace
-        if: runner.os == 'Windows'
-        shell: bash
-        working-directory: leotower
-        run: |
-          rc=0
-          RUST_BACKTRACE=full uv run --no-sync python -c "
-          import leotower
-          print('imported ok', flush=True)
-          r = leotower.Repl()
-          print('repl ok', flush=True)
-          " || rc=$?
-          echo "PROBE_EXIT=$rc"
