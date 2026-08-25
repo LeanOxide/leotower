@@ -464,3 +464,126 @@ def test_run_tacs_failure_raises_and_session_survives():
     # The session stays usable after the error.
     s2 = repl.run_tac(s1, "induction n")
     assert repl.get_num_goals(s2) == 2
+
+
+# ---------------------------------------------------------------------------
+# Query commands: check (#check), inspect (#print), num_states
+# ---------------------------------------------------------------------------
+
+
+def test_check_constant_root_context():
+    repl = Repl()
+    assert repl.check("Nat.add") == "Nat.add : Nat → Nat → Nat"
+
+
+def test_check_polymorphic_constant_uses_declared_type():
+    """A bare polymorphic constant prints `#check`-style (implicit and
+    universe arguments remain binders); a `have`-based elaboration would
+    reject it for unsynthesizable implicits."""
+    repl = Repl()
+    assert repl.check("List.map") == (
+        "List.map : {α : Type u_1} → {β : Type u_2} → (α → β) → List α → List β"
+    )
+
+
+def test_check_non_constant_in_local_context():
+    repl = Repl()
+    s0 = repl.set_goal("∀ n : Nat, n = n")
+    s1 = repl.run_tac(s0, "intro n")
+    assert repl.check("n", state=s1) == "n : Nat"
+    assert repl.check("n + 1", state=s1) == "n + 1 : Nat"
+
+
+def test_check_sees_run_cmd_constants():
+    """The constant path must see declarations added via run_cmd."""
+    repl = Repl()
+    repl.run_cmd("def my_leotower_const : Nat := 5")
+    assert repl.check("my_leotower_const") == "my_leotower_const : Nat"
+
+
+def test_check_unknown_identifier_raises():
+    repl = Repl()
+    with pytest.raises(RuntimeError, match="Unknown identifier"):
+        repl.check("no_such_decl_xyz")
+
+
+def test_check_out_of_scope_local_raises():
+    """Local hypotheses are not visible from the root context, and the
+    session is left intact."""
+    repl = Repl()
+    s0 = repl.set_goal("∀ n : Nat, n = n")
+    s1 = repl.run_tac(s0, "intro n")
+    with pytest.raises(RuntimeError, match="Unknown identifier"):
+        repl.check("n")
+    assert repl.get_num_goals(s1) == 1
+
+
+def test_check_unknown_state_raises_with_range():
+    repl = Repl()
+    repl.set_goal(ADD_COMM)
+    with pytest.raises(RuntimeError, match=r"unknown state 99 \(valid states: 0\.\.=0\)"):
+        repl.check("Nat.add", state=99)
+
+
+def test_check_on_closed_state_raises():
+    repl = Repl()
+    s0 = repl.set_goal("∀ n : Nat, n = n")
+    s1 = repl.run_tac(s0, "intro n")
+    s2 = repl.run_tac(s1, "exact rfl")
+    with pytest.raises(RuntimeError, match=r"no goal at index 0 in state 2 \(state has 0 goals\)"):
+        repl.check("n", state=s2)
+
+
+def test_check_bad_goal_idx_raises():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    with pytest.raises(RuntimeError, match=r"no goal at index 3 in state 0"):
+        repl.check("Nat.add", state=s0, goal_idx=3)
+
+
+def test_check_session_not_modified():
+    """check must not consume or alter replay states."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1 = repl.run_tac(s0, "intro n")
+    repl.check("n", state=s1)
+    repl.check("List.map")
+    assert repl.get_num_goals(s1) == 1
+    s2 = repl.run_tac(s1, "exact fun m => Nat.add_comm n m")
+    assert repl.get_num_goals(s2) == 0
+
+
+def test_inspect_definition():
+    repl = Repl()
+    out = repl.inspect("Nat.add")
+    assert out.startswith("def Nat.add : Nat → Nat → Nat")
+    assert ":=" in out
+
+
+def test_inspect_polymorphic_constant():
+    repl = Repl()
+    out = repl.inspect("List.map")
+    assert out.startswith("def List.map")
+    assert "List α → List β" in out
+
+
+def test_inspect_axiom_has_no_value():
+    repl = Repl()
+    repl.run_cmd("axiom my_leotower_ax : Nat")
+    out = repl.inspect("my_leotower_ax")
+    assert out == "axiom my_leotower_ax : Nat"
+
+
+def test_inspect_unknown_raises():
+    repl = Repl()
+    with pytest.raises(RuntimeError, match="unknown constant"):
+        repl.inspect("no_such_decl_xyz")
+
+
+def test_num_states_counts():
+    repl = Repl()
+    assert repl.num_states() == 0
+    s0 = repl.set_goal(ADD_COMM)
+    assert repl.num_states() == 1
+    s1 = repl.run_tac(s0, "intro n")
+    assert repl.num_states() == 2

@@ -131,16 +131,18 @@ class Repl:
         stay intact)."""
         return self._repl.run_tac(state, tactic, goal_idx)
 
-    def run_cmd(self, cmd: str) -> int:
+    def run_cmd(self, cmd: str) -> None:
         """Execute a Lean command in the current environment.
 
         The command is parsed with Lean's real parser and elaborated by the
         embedded frontend (``Lean.Elab.Command.elabCommandTopLevel``); the
         resulting environment is installed for subsequent calls. Commands
         that fail elaboration raise :class:`RuntimeError` (the session stays
-        usable). Returns the current tactic state id.
+        usable). Commands do not create replay states and return nothing —
+        use :meth:`inspect` / :meth:`check` for declaration and term
+        queries, and only run environment-mutating commands here.
         """
-        return self._repl.run_cmd(cmd)
+        self._repl.run_cmd(cmd)
 
     # -- goal queries -------------------------------------------------------
     def get_num_goals(self, state: int) -> int:
@@ -166,6 +168,55 @@ class Repl:
         for tac in tactics:
             cur = self.run_tac(cur, tac, goal_idx)
         return cur
+
+    # -- replay introspection -----------------------------------------------
+    def num_states(self) -> int:
+        """Number of replay states created so far (``0`` before the first
+        :meth:`set_goal`).  Valid state ids are ``0..num_states()``."""
+        return self._repl.num_states()
+
+    # -- queries -------------------------------------------------------------
+    def check(self, term: str, state: int | None = None, goal_idx: int = 0) -> str:
+        """``#check``-style query: elaborate ``term`` as a term and return
+        ``"{term} : {type}"`` with the type rendered by Lean's real pretty
+        printer.
+
+        With ``state=None`` the term is checked in the root context
+        (``state 0``'s context after :meth:`set_goal`, or the imported
+        modules only before it).  With ``state=N`` (and optional
+        ``goal_idx=K``) it is checked in that goal's local context, so
+        hypotheses introduced so far are in scope.
+
+        A bare constant (e.g. ``List.map``) is elaborated the way the
+        real ``#check`` does — with no expected type, so its universe
+        and implicit arguments remain binders and the printed type is
+        the declaration's declared type.  Any other term is elaborated
+        in the goal's local context.
+
+        Names are resolved at the meta level: use fully qualified names
+        (command-level scopes such as ``open`` do not apply). Elaboration
+        failures (unknown identifiers, type errors) raise
+        :class:`RuntimeError` with Lean's error message; the replay session
+        is not modified.
+
+        >>> repl.check("Nat.add")
+        'Nat.add : Nat → Nat → Nat'
+        """
+        return self._repl.check(term, state, goal_idx)
+
+    def inspect(self, name: str) -> str:
+        """``#print``-style query: show the declaration's kind, type, and
+        (for definitions, theorems, and opaque constants) its value, all
+        rendered by Lean's real pretty printer.
+
+        >>> repl.inspect("Nat.add")
+        'def Nat.add : Nat → Nat → Nat := ...'
+
+        Unknown declarations raise :class:`RuntimeError`. Declarations
+        created with :meth:`run_cmd` (``def``, ``axiom``, ...) are visible
+        here.
+        """
+        return self._repl.inspect(name)
 
     # -- environment queries ------------------------------------------------
     def env_has_const(self, name: str) -> bool:

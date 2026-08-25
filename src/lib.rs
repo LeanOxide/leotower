@@ -14,6 +14,19 @@ fn to_py_err(e: impl std::fmt::Display) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
+/// Error text for an out-of-range replay-state id, including the valid
+/// range so users can self-correct.
+fn unknown_state_msg(state: u64, len: usize) -> String {
+    if len == 0 {
+        format!("unknown state {state} (no states yet; call set_goal first)")
+    } else {
+        format!(
+            "unknown state {state} (valid states: 0..={})",
+            len - 1
+        )
+    }
+}
+
 /// Initialize the Lean runtime eagerly (one-time worker-thread bootstrap).
 ///
 /// Idempotent; `with_lean()` also ensures initialization on first use.
@@ -90,11 +103,11 @@ impl LeanSession {
 // ============================================================================
 
 use leo3::meta::context::{CoreContext, CoreState, MetaContext, MetaState};
-use leo3::meta::environment::LeanEnvironment;
+use leo3::meta::environment::{ConstantKind, LeanConstantInfo, LeanEnvironment};
 use leo3::meta::expr::LeanExpr;
 use leo3::meta::metam::MetaMContext;
 use leo3::meta::name::LeanName;
-use leo3::meta::repl::{import_modules_with_exts, run_tactic};
+use leo3::meta::repl::{import_modules_with_exts, pp_exprs, run_tactic};
 use leo3::instance::LeanAny;
 use leo3::unbound::LeanUnbound;
 
@@ -117,6 +130,9 @@ pub struct Repl {
     env: LeanUnbound<LeanEnvironment>,
     core_ctx: LeanUnbound<CoreContext>,
     core_state: LeanUnbound<CoreState>,
+    /// Monotonic counter for the `have`-declaration names used by
+    /// [`Self::check`] (guarantees a fresh name per call).
+    check_counter: u64,
     meta_ctx: LeanUnbound<MetaContext>,
     meta_state: LeanUnbound<MetaState>,
     states: Vec<ReplState>,
@@ -194,6 +210,7 @@ impl Repl {
                 env: env.unbind_mt(),
                 core_ctx: core_ctx.unbind_mt(),
                 core_state: core_state.unbind_mt(),
+                check_counter: 0,
                 meta_ctx: meta_ctx.unbind_mt(),
                 meta_state: meta_state.unbind_mt(),
                 states: Vec::new(),
@@ -246,14 +263,16 @@ impl Repl {
             let st = self
                 .states
                 .get(state as usize)
-                .ok_or_else(|| LeanError::other("unknown state"))?;
+                .ok_or_else(|| {
+                    LeanError::other(&unknown_state_msg(state, self.states.len()))
+                })?;
             let idx = goal_idx.unwrap_or(0);
             let goal = st
                 .goals
                 .get(idx)
                 .ok_or_else(|| {
                     LeanError::other(&format!(
-                        "no goal at index {idx} (state has {} goals)",
+                        "no goal at index {idx} in state {state} (state has {} goals)",
                         st.goals.len()
                     ))
                 })?;
@@ -292,7 +311,9 @@ impl Repl {
         let st = self
             .states
             .get(state as usize)
-            .ok_or_else(|| PyRuntimeError::new_err("unknown state"))?;
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(unknown_state_msg(state, self.states.len()))
+            })?;
         Ok(st.goals.len())
     }
 
@@ -301,7 +322,9 @@ impl Repl {
         let st = self
             .states
             .get(state as usize)
-            .ok_or_else(|| PyRuntimeError::new_err("unknown state"))?;
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(unknown_state_msg(state, self.states.len()))
+            })?;
         leo3::with_lean(|lean| -> LeanResult<Vec<Goal>> {
             let mut metam = self.rebind(lean)?;
             let mut out = Vec::new();
@@ -331,11 +354,18 @@ impl Repl {
         let st = self
             .states
             .get(state as usize)
-            .ok_or_else(|| PyRuntimeError::new_err("unknown state"))?;
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(unknown_state_msg(state, self.states.len()))
+            })?;
         let g = st
             .goals
             .get(idx)
-            .ok_or_else(|| PyRuntimeError::new_err("no such goal"))?;
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "no goal at index {idx} in state {state} (state has {} goals)",
+                    st.goals.len()
+                ))
+            })?;
         leo3::with_lean(|lean| -> LeanResult<String> {
             let mut metam = self.rebind(lean)?;
             let gb = g.bind(lean);
@@ -354,24 +384,193 @@ impl Repl {
         .map_err(to_py_err)
     }
 
-    /// Execute a Lean command (e.g. `example`, `theorem`, `def`, `open`) in
-    /// the current environment, updating it. Returns a new state id (the
-    /// tactic-goal state is unchanged).
+    /// Execute a Lean command (e.g. `def`, `theorem`, `axiom`, `open`) in
+    /// the current environment, updating it. Returns nothing: commands do
+    /// not create replay states — use the state ids returned by
+    /// `set_goal`/`run_tac` (see `num_states`).
     ///
     /// The command is parsed with Lean's real parser and elaborated by the
     /// embedded `Lean.Elab.Command.elabCommandTopLevel` frontend; the
     /// resulting environment is installed for subsequent calls. Commands
     /// that fail elaboration raise `RuntimeError` (the replay session stays
-    /// intact).
-    fn run_cmd(&mut self, cmd: &str) -> PyResult<u64> {
-        leo3::with_lean(|lean| -> LeanResult<u64> {
+    /// intact). Note: command output (`#print`, `#check`, `#eval`, ...) is
+    /// not captured — use `inspect` / `check` for declaration and term
+    /// queries, and only run environment-mutating commands here.
+    fn run_cmd(&mut self, cmd: &str) -> PyResult<()> {
+        leo3::with_lean(|lean| -> LeanResult<()> {
             let mut metam = self.rebind(lean)?;
             let stx = leo3::meta::repl::parse_command(lean, metam.env(), cmd)?;
             let env2 = leo3::meta::repl::run_command(lean, &metam, &stx)?;
             metam.replace_env(env2);
             self.save(metam);
-            // Tactic-goal states are untouched by command execution.
-            Ok(self.states.len().saturating_sub(1) as u64)
+            Ok(())
+        })
+        .map_err(to_py_err)
+    }
+
+    /// Number of replay states created so far (`0` before the first
+    /// `set_goal`). Valid state ids are `0..num_states()`.
+    fn num_states(&self) -> usize {
+        self.states.len()
+    }
+
+    /// `#check`-style query: return the type of `term` in the requested
+    /// context, rendered as `"{term} : {type}"` by Lean's real pretty
+    /// printer.
+    ///
+    /// - `state=None`: the root context — `state 0`'s context after
+    ///   `set_goal`, or the imported modules only before it.
+    /// - `state=N, goal_idx=K`: the local context of that goal
+    ///   (hypotheses introduced so far are in scope).
+    ///
+    /// A bare constant (e.g. `List.map`) behaves like the real `#check`:
+    /// it is elaborated with no expected type, so its universe and
+    /// implicit arguments remain binders — the printed type is the
+    /// declaration's declared type. Any other term is elaborated in the
+    /// goal's local context.
+    ///
+    /// Names are resolved at the meta level, so fully qualified names are
+    /// required (command-level scopes such as `open` do not apply).
+    /// Elaboration failures (unknown identifiers, type errors) raise
+    /// `RuntimeError` with Lean's error message; the replay session is not
+    /// modified.
+    #[pyo3(signature = (term, state=None, goal_idx=None))]
+    fn check(
+        &mut self,
+        term: &str,
+        state: Option<u64>,
+        goal_idx: Option<usize>,
+    ) -> PyResult<String> {
+        leo3::with_lean(|lean| -> LeanResult<String> {
+            let mut metam = self.rebind(lean)?;
+            // Resolve (and validate) the requested goal context. The goal
+            // is only needed to elaborate non-constant terms; a bare
+            // constant's type is environment-fixed.
+            let goal: Option<LeanBound<'_, LeanName>> = match state {
+                Some(state) => {
+                    let st = self
+                        .states
+                        .get(state as usize)
+                        .ok_or_else(|| {
+                            LeanError::other(&unknown_state_msg(
+                                state,
+                                self.states.len(),
+                            ))
+                        })?;
+                    let idx = goal_idx.unwrap_or(0);
+                    let g = st
+                        .goals
+                        .get(idx)
+                        .ok_or_else(|| {
+                            LeanError::other(&format!(
+                                "no goal at index {idx} in state {state} (state has {} goals)",
+                                st.goals.len()
+                            ))
+                        })?;
+                    metam.replace_meta_state(st.meta_state.bind(lean).cast());
+                    Some(g.bind(lean))
+                }
+                None => {
+                    if let Some(st0) = self.states.first() {
+                        metam.replace_meta_state(st0.meta_state.bind(lean).cast());
+                    }
+                    None
+                }
+            };
+            // `#check` semantics for a bare constant: the real `#check`
+            // elaborates it with no expected type, leaving its universe
+            // and implicit arguments as binders, so the printed type is
+            // the declaration's declared type. Elaborating via `have`
+            // instead would require synthesizing every implicit argument
+            // and reject such constants (e.g. `List.map`), so resolve
+            // them from the environment directly.
+            let env = self.env.bind(lean);
+            if let Ok(nm) = LeanName::from_components(lean, term) {
+                if let Some(cinfo) = LeanEnvironment::find(&env, &nm)? {
+                    let ty = LeanConstantInfo::type_(&cinfo)?;
+                    let rendered =
+                        pp_exprs(&metam, &empty_lctx(lean), &empty_insts(lean), &[ty])?;
+                    return Ok(format!("{term} : {}", rendered[0]));
+                }
+            }
+            // Otherwise elaborate the term as a local declaration in the
+            // goal's local context; its type (the last hypothesis of the
+            // tactic's resulting goal) is the term's type. `runTactic`
+            // yields a FRESH goal mvar carrying the updated local context
+            // — the source mvar is left untouched — so the hypothesis
+            // must be read from the tactic's outcome, not from the
+            // original goal.
+            let goal = match goal {
+                Some(g) => g,
+                None => {
+                    let true_const = LeanExpr::const_(
+                        lean,
+                        LeanName::from_str(lean, "True")?,
+                        LeanList::nil(lean)?,
+                    )?;
+                    let g = metam.mk_goal(&true_const)?;
+                    LeanExpr::mvar_id(&g)?
+                }
+            };
+            self.check_counter += 1;
+            let decl_name = format!("h_leotower_check_{}", self.check_counter);
+            let tac = format!("have {decl_name} := {term}");
+            let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), &tac)?;
+            let outcome = run_tactic(&mut metam, &goal, &stx, None)?;
+            let goal_after = outcome
+                .goals
+                .first()
+                .cloned()
+                .ok_or_else(|| {
+                    LeanError::other("internal error: check have produced no goals")
+                })?;
+            let (hyps, _ty) = metam.goal_hyps_and_type_pp(&goal_after)?;
+            let (_, pp_type) = hyps.last().ok_or_else(|| {
+                LeanError::other(
+                    "internal error: check declaration not found in goal context",
+                )
+            })?;
+            Ok(format!("{term} : {pp_type}"))
+        })
+        .map_err(to_py_err)
+    }
+
+    /// `#print`-style query: show a declaration's kind, type, and (for
+    /// definitions/theorems/opaque constants) its value, all rendered by
+    /// Lean's real pretty printer. Unknown declarations raise
+    /// `RuntimeError`.
+    fn inspect(&self, name: &str) -> PyResult<String> {
+        leo3::with_lean(|lean| -> LeanResult<String> {
+            let metam = self.rebind(lean)?;
+            let env = self.env.bind(lean);
+            let nm = LeanName::from_components(lean, name)?;
+            let cinfo = LeanEnvironment::find(&env, &nm)?
+                .ok_or_else(|| LeanError::other(&format!("unknown constant: {name}")))?;
+            let kind = LeanConstantInfo::kind(&cinfo);
+            let ty = LeanConstantInfo::type_(&cinfo)?;
+            let value = LeanConstantInfo::value(&cinfo)?;
+            // Top-level declarations are closed: pretty-print with an
+            // empty local context / local instances.
+            let mut exprs = vec![ty];
+            if let Some(v) = value {
+                exprs.push(v);
+            }
+            let rendered = pp_exprs(&metam, &empty_lctx(lean), &empty_insts(lean), &exprs)?;
+            let label = match kind {
+                ConstantKind::Inductive => "inductive",
+                ConstantKind::Axiom => "axiom",
+                ConstantKind::Opaque => "opaque",
+                ConstantKind::Theorem => "theorem",
+                ConstantKind::Definition => "def",
+                ConstantKind::Constructor => "def",
+                ConstantKind::Recursor => "def",
+                ConstantKind::Quot => "def",
+            };
+            let mut out = format!("{label} {name} : {}", rendered[0]);
+            if rendered.len() > 1 {
+                out.push_str(&format!(" :=\n{}", rendered[1]));
+            }
+            Ok(out)
         })
         .map_err(to_py_err)
     }
@@ -399,6 +598,23 @@ fn leo3_name_to_string<'l>(
         let s = ffi::closure::lean_apply_1(closure, name.as_ptr());
         let s = LeanBound::<LeanString>::from_owned_ptr(lean, s);
         Ok(LeanString::cstr(&s)?.to_string())
+    }
+}
+
+/// Empty local context for pretty-printing closed (top-level) expressions.
+fn empty_lctx<'l>(lean: Lean<'l>) -> LeanBound<'l, LeanAny> {
+    unsafe {
+        LeanBound::from_owned_ptr(
+            lean,
+            ffi::meta::lean_mk_empty_local_ctx(ffi::lean_box(0)),
+        )
+    }
+}
+
+/// Empty local-instance context for pretty-printing closed expressions.
+fn empty_insts<'l>(lean: Lean<'l>) -> LeanBound<'l, LeanAny> {
+    unsafe {
+        LeanBound::from_owned_ptr(lean, ffi::array::lean_mk_empty_array())
     }
 }
 

@@ -66,10 +66,14 @@ assert repl.get_num_goals(s4) == 0
 | `Repl(module="Lean")` | import a module (dot-separated names, or a `.lean` file path whose top-level commands are elaborated) into a fresh environment |
 | `Repl.set_goal(type_str)` | parse + elaborate a term as the root goal type; returns state 0 |
 | `Repl.run_tac(state, tactic, goal_idx=0)` | apply a tactic to the `goal_idx`-th goal; unworked goals are preserved in the new state |
+| `Repl.run_tacs(state, tactics, goal_idx=0)` | apply a tactic sequence in order, one call end to end; returns the final state id |
 | `Repl.get_goals(state)` | remaining goals as `Goal(hyps, ty, mvar)`, pretty-printed with Lean's real delaborator |
 | `Repl.get_num_goals(state)` | number of remaining goals |
 | `Repl.get_goal_pp(state, goal_idx=0)` | pretty-printed goal (hypotheses + `⊢ type`) |
-| `Repl.run_cmd(cmd)` | parse and elaborate a command (e.g. `def`/`theorem`); the resulting environment is installed for subsequent calls |
+| `Repl.num_states()` | number of replay states created so far; valid ids are `0..num_states()` |
+| `Repl.check(term, state=None, goal_idx=0)` | `#check`-style query: `"{term} : {type}"`; `state=None` checks in the root context, `state=N` in that goal's local context. A bare constant prints its declared type (as the real `#check` does, with implicit/universe arguments as binders); other terms are elaborated in the goal context |
+| `Repl.inspect(name)` | `#print`-style query: kind, type, and (for definitions/theorems/opaque constants) value, rendered by Lean's real pretty printer |
+| `Repl.run_cmd(cmd)` | parse and elaborate a command (e.g. `def`/`theorem`/`axiom`); the resulting environment is installed for subsequent calls. Returns `None` — use `inspect` to view what it defined |
 | `Repl.env_has_const(name)` | environment lookup |
 
 Tactic failures raise `RuntimeError` with the elaborator's error message
