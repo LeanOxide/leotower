@@ -553,6 +553,43 @@ def test_check_session_not_modified():
     assert repl.get_num_goals(s2) == 0
 
 
+def test_check_local_shadow_of_global_constant():
+    """A local fvar shadowing a global constant must win: the name
+    resolves to the local declaration, not the global one."""
+    repl = Repl()
+    s = repl.set_goal("∀ List : Nat, List = List")
+    s = repl.run_tac(s, "intro List")
+    assert repl.check("List", state=s) == "List : Nat"
+
+
+def test_check_local_shadow_of_Nat():
+    """Shadowing a core constant (here `Nat`) resolves to the local; the
+    local's type is the global `Nat` type, disambiguated as `_root_.Nat`."""
+    repl = Repl()
+    s = repl.set_goal("∀ Nat : Nat, True")
+    s = repl.run_tac(s, "intro Nat")
+    assert repl.check("Nat", state=s) == "Nat : _root_.Nat"
+def test_check_local_prefix_shadow_of_qualified_name():
+    """A local `List` also shadows the prefix of `List.map`: the
+    constant fast path is skipped and Lean's own error is surfaced."""
+    repl = Repl()
+    s = repl.set_goal("∀ List : Nat, List = List")
+    s = repl.run_tac(s, "intro List")
+    with pytest.raises(RuntimeError):
+        repl.check("List.map", state=s)
+
+
+def test_check_unshadowed_constant_still_uses_declared_type():
+    """The fast path must not regress for unshadowed names, even in a
+    local context that merely contains other hypotheses."""
+    repl = Repl()
+    s0 = repl.set_goal("∀ n : Nat, n = n")
+    s1 = repl.run_tac(s0, "intro n")
+    assert repl.check("List.map", state=s1) == (
+        "List.map : {α : Type u_1} → {β : Type u_2} → (α → β) → List α → List β"
+    )
+
+
 def test_inspect_definition():
     repl = Repl()
     out = repl.inspect("Nat.add")

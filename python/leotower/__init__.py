@@ -194,6 +194,11 @@ class Repl:
         the declaration's declared type.  Any other term is elaborated
         in the goal's local context.
 
+        Name resolution follows Lean: a local hypothesis that shadows
+        the name — including a prefix shadow of a qualified name (a
+        local ``List`` also shadows ``List.map``) — resolves to the
+        local declaration, not the global constant.
+
         Names are resolved at the meta level: use fully qualified names
         (command-level scopes such as ``open`` do not apply). Elaboration
         failures (unknown identifiers, type errors) raise

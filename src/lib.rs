@@ -404,6 +404,11 @@ impl Repl {
     /// declaration's declared type. Any other term is elaborated in the
     /// goal's local context.
     ///
+    /// Name resolution follows Lean: a local hypothesis that shadows the
+    /// name — including a prefix shadow of a qualified name (a local
+    /// `List` also shadows `List.map`) — resolves to the local
+    /// declaration, not the global constant.
+    ///
     /// Names are resolved at the meta level, so fully qualified names are
     /// required (command-level scopes such as `open` do not apply).
     /// Elaboration failures (unknown identifiers, type errors) raise
@@ -443,6 +448,32 @@ impl Repl {
                     None
                 }
             };
+            // Name resolution: if a local hypothesis of the target goal
+            // shadows the term's name (or a prefix of it — a local
+            // `List` also shadows `List.map`), the name resolves to the
+            // local declaration, and the constant fast path below would
+            // wrongly return the global declaration's type. Skip it in
+            // that case; the `have`-based elaboration resolves names the
+            // way Lean does (locals first).
+            let shadowed = match &goal {
+                Some(g) => {
+                    let (hyps, _ty) = metam.goal_hyps_and_type_pp(g)?;
+                    let mut prefix = String::new();
+                    let mut shadowed = false;
+                    for part in term.split('.') {
+                        if !prefix.is_empty() {
+                            prefix.push('.');
+                        }
+                        prefix.push_str(part);
+                        if hyps.iter().any(|(name, _)| name == &prefix) {
+                            shadowed = true;
+                            break;
+                        }
+                    }
+                    shadowed
+                }
+                None => false,
+            };
             // `#check` semantics for a bare constant: the real `#check`
             // elaborates it with no expected type, leaving its universe
             // and implicit arguments as binders, so the printed type is
@@ -451,11 +482,14 @@ impl Repl {
             // and reject such constants (e.g. `List.map`), so resolve
             // them from the environment directly.
             let env = self.env.bind(lean);
-            if let Ok(nm) = LeanName::from_components(lean, term) {
-                if let Some(cinfo) = LeanEnvironment::find(&env, &nm)? {
-                    let ty = LeanConstantInfo::type_(&cinfo)?;
-                    let rendered = pp_exprs(&metam, &empty_lctx(lean), &empty_insts(lean), &[ty])?;
-                    return Ok(format!("{term} : {}", rendered[0]));
+            if !shadowed {
+                if let Ok(nm) = LeanName::from_components(lean, term) {
+                    if let Some(cinfo) = LeanEnvironment::find(&env, &nm)? {
+                        let ty = LeanConstantInfo::type_(&cinfo)?;
+                        let rendered =
+                            pp_exprs(&metam, &empty_lctx(lean), &empty_insts(lean), &[ty])?;
+                        return Ok(format!("{term} : {}", rendered[0]));
+                    }
                 }
             }
             // Otherwise elaborate the term as a local declaration in the
