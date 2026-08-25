@@ -467,6 +467,111 @@ def test_run_tacs_failure_raises_and_session_survives():
 
 
 # ---------------------------------------------------------------------------
+# Non-raising variants: try_run_tac / try_run_tacs (proof-search / RL loops)
+# ---------------------------------------------------------------------------
+
+
+def test_try_run_tac_success():
+    """On success, try_run_tac returns (new_state, True)."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s1, ok = repl.try_run_tac(s0, "intro n m")
+    assert ok is True
+    assert s1 != s0
+    assert repl.get_num_goals(s1) == 1
+
+
+def test_try_run_tac_failure_returns_source_state_no_raise():
+    """A failing tactic returns (source_state, False) and does not raise.
+    No new state is appended, and the session stays usable afterwards."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s, ok = repl.try_run_tac(s0, "rw [nonexistent_lemma]")
+    assert ok is False
+    assert s == s0
+    # The failed attempt did not append a state.
+    assert repl.num_states() == 1
+    # The session is still usable: run_tac and get_goals work.
+    s1 = repl.run_tac(s0, "intro n m")
+    assert repl.get_num_goals(s1) == 1
+
+
+def test_try_run_tac_goal_idx_out_of_range():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s, ok = repl.try_run_tac(s0, "simp", goal_idx=5)
+    assert ok is False
+    assert s == s0
+
+
+def test_try_run_tac_unknown_state():
+    """An out-of-range state id returns (state, False) instead of raising."""
+    repl = Repl()
+    repl.set_goal(ADD_COMM)
+    s, ok = repl.try_run_tac(99, "intro n m")
+    assert ok is False
+    assert s == 99
+
+
+def test_try_run_tac_success_matches_run_tac():
+    """On success, the try_ variant advances the proof exactly like run_tac:
+    the resulting state has the same remaining goal. Each goal pp is
+    snapshot while its state is the session's latest (re-querying a sibling
+    branch after the session advances on another is a pre-existing
+    limitation, covered separately)."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s_ran = repl.run_tac(s0, "intro n m")
+    ran_pp = repl.get_goal_pp(s_ran)  # snapshot while s_ran is the latest
+    s_try, ok = repl.try_run_tac(s0, "intro n m")
+    assert ok is True
+    assert repl.get_num_goals(s_try) == 1
+    try_pp = repl.get_goal_pp(s_try)
+    # Both branches from s0 with "intro n m" render the same remaining goal.
+    assert "n m : Nat" in ran_pp and "n m : Nat" in try_pp
+    assert "n + m = m + n" in ran_pp and "n + m = m + n" in try_pp
+
+
+def test_try_run_tacs_applies_sequence():
+    """try_run_tacs applies the sequence and returns (final_state, True)."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s_final, ok = repl.try_run_tacs(
+        s0,
+        ["intro n m", "induction n",
+         "simp only [Nat.zero_add, Nat.add_zero]",
+         "simp only [Nat.add_comm, Nat.add_succ]"],
+    )
+    assert ok is True
+    assert repl.get_num_goals(s_final) == 0
+
+
+def test_try_run_tacs_mid_sequence_failure():
+    """A failing tactic midway returns (last_successful_state, False) without
+    raising. The state after the last successful tactic stays queryable and
+    the session stays usable."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    # "intro n m" succeeds; the next tactic fails on an unknown identifier.
+    s, ok = repl.try_run_tacs(s0, ["intro n m", "rw [nonexistent_lemma]", "rfl"])
+    assert ok is False
+    # The first tactic succeeded, so the returned state is the one after it.
+    assert s != s0
+    assert repl.get_num_goals(s) == 1
+    # The session is still usable after the failure.
+    s2 = repl.run_tac(s, "induction n")
+    assert repl.get_num_goals(s2) == 2
+
+
+def test_try_run_tacs_empty_returns_state_true():
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    s, ok = repl.try_run_tacs(s0, [])
+    assert ok is True
+    assert s == s0
+
+
+# ---------------------------------------------------------------------------
 # Query commands: check (#check), inspect (#print), num_states
 # ---------------------------------------------------------------------------
 

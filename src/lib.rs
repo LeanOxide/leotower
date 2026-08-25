@@ -168,6 +168,58 @@ impl Repl {
         self.meta_ctx = meta_ctx.unbind_mt();
         self.meta_state = meta_state.unbind_mt();
     }
+
+    /// Apply `tactic` to the `goal_idx`-th goal of `state`, appending the
+    /// new replay state on success and returning its id. Shared by
+    /// [`Self::run_tac`] and [`Self::try_run_tac`].
+    ///
+    /// On any failure (unknown state, out-of-range goal, or tactic
+    /// parse/elaboration/run error) no state is appended and the session is
+    /// left intact; the `LeanError` is returned for the caller to decide how
+    /// to surface it.
+    fn apply_tac(
+        &mut self,
+        lean: Lean<'_>,
+        state: u64,
+        tactic: &str,
+        goal_idx: Option<usize>,
+    ) -> LeanResult<u64> {
+        let mut metam = self.rebind(lean)?;
+        let st = self
+            .states
+            .get(state as usize)
+            .ok_or_else(|| LeanError::other(&unknown_state_msg(state, self.states.len())))?;
+        let idx = goal_idx.unwrap_or(0);
+        let goal = st.goals.get(idx).ok_or_else(|| {
+            LeanError::other(&format!(
+                "no goal at index {idx} in state {state} (state has {} goals)",
+                st.goals.len()
+            ))
+        })?;
+        let goal = goal.bind(lean);
+        let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), tactic)?;
+        // Branch from the target state's Meta.State snapshot (None →
+        // run_tactic wraps metam.meta_state() in a fresh ref).
+        metam.replace_meta_state(st.meta_state.bind(lean).cast());
+        let outcome = run_tactic(&mut metam, &goal, &stx, None)?;
+        // `Elab.runTactic` returns only the goals produced by the tactic
+        // run itself; the source state's OTHER goals (multi-goal states
+        // from induction/split/cases, or goals the tactic solved
+        // implicitly) stay in the meta state but are not in that list.
+        // Preserve them so a proof can advance goal by goal.
+        let mut goals = st
+            .goals
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != idx)
+            .map(|(_, g)| g.clone())
+            .collect::<Vec<_>>();
+        goals.extend(outcome.goals.into_iter().map(|g| g.unbind_mt()));
+        let meta_state = metam.meta_state_snapshot();
+        self.save(metam);
+        self.states.push(ReplState { goals, meta_state });
+        Ok((self.states.len() - 1) as u64)
+    }
 }
 
 #[pymethods]
@@ -249,44 +301,28 @@ impl Repl {
     /// can be advanced goal by goal in any order.
     #[pyo3(signature = (state, tactic, goal_idx=None))]
     fn run_tac(&mut self, state: u64, tactic: &str, goal_idx: Option<usize>) -> PyResult<u64> {
-        leo3::with_lean(|lean| -> LeanResult<u64> {
-            let mut metam = self.rebind(lean)?;
-            let st = self
-                .states
-                .get(state as usize)
-                .ok_or_else(|| LeanError::other(&unknown_state_msg(state, self.states.len())))?;
-            let idx = goal_idx.unwrap_or(0);
-            let goal = st.goals.get(idx).ok_or_else(|| {
-                LeanError::other(&format!(
-                    "no goal at index {idx} in state {state} (state has {} goals)",
-                    st.goals.len()
-                ))
-            })?;
-            let goal = goal.bind(lean);
-            let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), tactic)?;
-            // Branch from the target state's Meta.State snapshot (None →
-            // run_tactic wraps metam.meta_state() in a fresh ref).
-            metam.replace_meta_state(st.meta_state.bind(lean).cast());
-            let outcome = run_tactic(&mut metam, &goal, &stx, None)?;
-            // `Elab.runTactic` returns only the goals produced by the tactic
-            // run itself; the source state's OTHER goals (multi-goal states
-            // from induction/split/cases, or goals the tactic solved
-            // implicitly) stay in the meta state but are not in that list.
-            // Preserve them so a proof can advance goal by goal.
-            let mut goals = st
-                .goals
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != idx)
-                .map(|(_, g)| g.clone())
-                .collect::<Vec<_>>();
-            goals.extend(outcome.goals.into_iter().map(|g| g.unbind_mt()));
-            let meta_state = metam.meta_state_snapshot();
-            self.save(metam);
-            self.states.push(ReplState { goals, meta_state });
-            Ok((self.states.len() - 1) as u64)
-        })
-        .map_err(to_py_err)
+        leo3::with_lean(|lean| self.apply_tac(lean, state, tactic, goal_idx)).map_err(to_py_err)
+    }
+
+    /// Non-raising variant of [`Self::run_tac`]: returns
+    /// `(state_id, success)` instead of raising `RuntimeError`.
+    ///
+    /// On success the new replay state id is returned with `true`. On
+    /// failure (unknown state, out-of-range goal, or tactic
+    /// parse/elaboration/run error) the source `state` id is returned with
+    /// `false` and no new state is appended — the session and the replay
+    /// state stay usable. This is the core idiom for proof-search / RL
+    /// loops ("try a tactic, learn whether it succeeded"):
+    ///
+    /// ```python
+    /// s2, ok = repl.try_run_tac(s1, "simp")
+    /// ```
+    #[pyo3(signature = (state, tactic, goal_idx=None))]
+    fn try_run_tac(&mut self, state: u64, tactic: &str, goal_idx: Option<usize>) -> (u64, bool) {
+        match leo3::with_lean(|lean| self.apply_tac(lean, state, tactic, goal_idx)) {
+            Ok(new_state) => (new_state, true),
+            Err(_) => (state, false),
+        }
     }
 
     /// Number of remaining goals in `state`.

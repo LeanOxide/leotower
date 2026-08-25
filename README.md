@@ -67,6 +67,8 @@ assert repl.get_num_goals(s4) == 0
 | `Repl.set_goal(type_str)` | parse + elaborate a term as the root goal type; returns state 0 |
 | `Repl.run_tac(state, tactic, goal_idx=0)` | apply a tactic to the `goal_idx`-th goal; unworked goals are preserved in the new state |
 | `Repl.run_tacs(state, tactics, goal_idx=0)` | apply a tactic sequence in order, one call end to end; returns the final state id |
+| `Repl.try_run_tac(state, tactic, goal_idx=0)` | non-raising `run_tac`: returns `(state_id, success)` — the new state and `True` on success, the source state and `False` on failure (no state appended); the session stays usable. The core idiom for proof-search / RL loops |
+| `Repl.try_run_tacs(state, tactics, goal_idx=0)` | non-raising `run_tacs`: apply a tactic sequence left to right, returning `(state_id, success)` — the final state and `True` if all succeed, the state after the last successful tactic and `False` if one fails |
 | `Repl.get_goals(state)` | remaining goals as `Goal(hyps, ty, mvar)`, pretty-printed with Lean's real delaborator |
 | `Repl.get_num_goals(state)` | number of remaining goals |
 | `Repl.get_goal_pp(state, goal_idx=0)` | pretty-printed goal (hypotheses + `⊢ type`) |
@@ -77,7 +79,10 @@ assert repl.get_num_goals(s4) == 0
 | `Repl.env_has_const(name)` | environment lookup |
 
 Tactic failures raise `RuntimeError` with the elaborator's error message
-(`tactic error: ...`); the session stays usable afterwards.
+(`tactic error: ...`); the session stays usable afterwards. For
+proof-search / RL loops that must *test* a tactic without exception
+handling, use the non-raising `try_run_tac` / `try_run_tacs`, which return
+`(state_id, success)` instead of raising.
 
 Known limitations:
 

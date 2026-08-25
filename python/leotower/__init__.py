@@ -131,6 +131,21 @@ class Repl:
         stay intact)."""
         return self._repl.run_tac(state, tactic, goal_idx)
 
+    def try_run_tac(self, state: int, tactic: str, goal_idx: int = 0) -> "tuple[int, bool]":
+        """Non-raising variant of :meth:`run_tac`: returns
+        ``(state_id, success)`` instead of raising :class:`RuntimeError`.
+
+        On success the new state id and ``True`` are returned. On failure
+        (unknown state, out-of-range goal, or tactic parse/elaboration/run
+        error) the source ``state`` id and ``False`` are returned, and no
+        new state is appended — the session and the replay state stay
+        usable. This is the core idiom for proof-search / RL loops (try a
+        tactic, learn whether it succeeded):
+
+        >>> s2, ok = repl.try_run_tac(s1, "simp")
+        """
+        return self._repl.try_run_tac(state, tactic, goal_idx)
+
     def run_cmd(self, cmd: str) -> None:
         """Execute a Lean command in the current environment.
 
@@ -168,6 +183,25 @@ class Repl:
         for tac in tactics:
             cur = self.run_tac(cur, tac, goal_idx)
         return cur
+
+    def try_run_tacs(self, state: int, tactics: "list[str]", goal_idx: int = 0) -> "tuple[int, bool]":
+        """Non-raising variant of :meth:`run_tacs`: apply a sequence of
+        tactics in order to the ``goal_idx``-th goal, starting from
+        ``state``, and return ``(state_id, success)`` instead of raising
+        :class:`RuntimeError`.
+
+        If every tactic succeeds, ``(final_state, True)`` is returned. If
+        one fails midway, the state after the last successful tactic and
+        ``False`` are returned — the states produced before the failure
+        stay queryable and the session stays usable. If ``tactics`` is
+        empty, ``(state, True)`` is returned unchanged.
+        """
+        cur = state
+        for tac in tactics:
+            cur, ok = self.try_run_tac(cur, tac, goal_idx)
+            if not ok:
+                return cur, False
+        return cur, True
 
     # -- replay introspection -----------------------------------------------
     def num_states(self) -> int:
