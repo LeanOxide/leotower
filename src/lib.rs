@@ -265,11 +265,12 @@ impl Repl {
         .map_err(to_py_err)
     }
 
-    /// Set the root goal from a term string. The type is elaborated by
-    /// Lean's real elaborator through the `suffices` tactic: create a `True`
-    /// goal and replace it with `type_str` (`suffices h : t from True.intro`
-    /// — the `from` proof is `True.intro`, the target type is the new goal).
-    /// Returns state 0.
+    /// Create a new root goal state from a term string. The type is
+    /// elaborated by Lean's real elaborator through the `suffices` tactic:
+    /// create a `True` goal and replace it with `type_str` (`suffices h : t
+    /// from True.intro` — the `from` proof is `True.intro`, the target type
+    /// is the new goal). Existing states are unaffected; returns the new
+    /// state's id (0 for the first call in a fresh session).
     fn set_goal(&mut self, type_str: &str) -> PyResult<u64> {
         leo3::with_lean(|lean| -> LeanResult<u64> {
             let mut metam = self.rebind(lean)?;

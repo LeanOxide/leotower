@@ -71,6 +71,35 @@ def test_set_goal_and_queries():
     assert "⊢" in pp
 
 
+def test_set_goal_appends_independent_root_states():
+    """set_goal appends a new root state per call: a second call in the
+    same session returns the next id (1), not 0, and the two root states
+    stay independent — proving one does not touch the other."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    assert s0 == 0
+    s1 = repl.set_goal("2 + 2 = 4")
+    assert s1 == 1
+    assert repl.num_states() == 2
+    # Each root state keeps its own goal; the first is untouched by the
+    # second set_goal.
+    assert repl.get_num_goals(s0) == 1
+    assert "n + m = m + n" in repl.get_goal_pp(s0)
+    assert repl.get_num_goals(s1) == 1
+    assert "2 + 2 = 4" in repl.get_goal_pp(s1)
+    # The states are independent: proving s1 leaves s0 fully intact.
+    s2 = repl.run_tac(s1, "rfl")
+    assert repl.get_num_goals(s2) == 0
+    assert repl.get_num_goals(s0) == 1
+    assert "n + m = m + n" in repl.get_goal_pp(s0)
+    # A third call appends again (state 3 — run_tac above took state 2),
+    # still independent of the rest.
+    s3 = repl.set_goal("True")
+    assert s3 == 3
+    assert repl.num_states() == 4
+    assert repl.get_num_goals(s3) == 1
+
+
 def test_run_tac_steps():
     repl = Repl()
     s0 = repl.set_goal(ADD_COMM)
