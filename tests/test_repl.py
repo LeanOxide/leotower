@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from leotower import Repl
+from leotower import Repl, LeanError, TacticError
 
 # Windows: constructing Repl() aborts the whole process (misaligned pointer
 # dereference in leo3-ffi, exit 127, no Python traceback) — tracked in W-395.
@@ -729,3 +729,70 @@ def test_num_states_counts():
     assert repl.num_states() == 1
     s1 = repl.run_tac(s0, "intro n")
     assert repl.num_states() == 2
+
+
+# ============================================================================
+# Exception hierarchy: LeanError / TacticError
+# ============================================================================
+
+
+def test_exception_hierarchy():
+    """TacticError refines LeanError; both refine RuntimeError so existing
+    ``except RuntimeError`` handlers keep working (backward compatibility)."""
+    assert issubclass(LeanError, RuntimeError)
+    assert issubclass(TacticError, LeanError)
+
+
+def test_tactic_failures_raise_tactic_error():
+    """Every tactic-failure path raises TacticError with the original
+    message and cause preserved."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    # Type error.
+    with pytest.raises(TacticError, match="tactic error") as excinfo:
+        repl.run_tac(s0, "exact 42")
+    # The original message and the underlying cause are preserved.
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    # Parse error — a bare ``except RuntimeError`` still catches it
+    # (backward compatibility) and the concrete type is TacticError.
+    with pytest.raises(RuntimeError, match="tactic parse error") as excinfo:
+        repl.run_tac(s0, "this is not a tactic !!!")
+    assert isinstance(excinfo.value, TacticError)
+    # Unknown state.
+    with pytest.raises(TacticError, match="unknown state"):
+        repl.run_tac(99, "intro n")
+    # run_tacs propagates the TacticError of the failing element.
+    s1 = repl.run_tac(s0, "intro n m")
+    with pytest.raises(TacticError):
+        # "intro n m" already introduced both vars; re-introducing fails.
+        repl.run_tacs(s1, ["intro n m", "rfl"])
+
+
+def test_non_tactic_failures_raise_lean_error():
+    """set_goal / run_cmd / check / inspect failures raise LeanError."""
+    repl = Repl()
+    with pytest.raises(LeanError):
+        repl.set_goal("this is not a term @@@")
+    with pytest.raises(LeanError, match="command parse error"):
+        repl.run_cmd("this is not a command @@@")
+    with pytest.raises(LeanError, match="Unknown identifier"):
+        repl.check("no_such_decl_xyz")
+    with pytest.raises(LeanError, match="unknown constant"):
+        repl.inspect("no_such_decl_xyz")
+
+
+def test_every_error_is_caught_by_except_runtime_error():
+    """Backward compatibility across the whole hierarchy: each wrapped
+    failure is still caught by a plain ``except RuntimeError`` handler."""
+    repl = Repl()
+    s0 = repl.set_goal(ADD_COMM)
+    for call in (
+        lambda: repl.run_tac(s0, "this is not a tactic !!!"),
+        lambda: repl.run_tacs(s0, ["this is not a tactic !!!"]),
+        lambda: repl.set_goal("this is not a term @@@"),
+        lambda: repl.run_cmd("this is not a command @@"),
+        lambda: repl.check("no_such_decl_xyz"),
+        lambda: repl.inspect("no_such_decl_xyz"),
+    ):
+        with pytest.raises(RuntimeError):
+            call()
