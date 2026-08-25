@@ -20,10 +20,7 @@ fn unknown_state_msg(state: u64, len: usize) -> String {
     if len == 0 {
         format!("unknown state {state} (no states yet; call set_goal first)")
     } else {
-        format!(
-            "unknown state {state} (valid states: 0..={})",
-            len - 1
-        )
+        format!("unknown state {state} (valid states: 0..={})", len - 1)
     }
 }
 
@@ -102,13 +99,13 @@ impl LeanSession {
 // Repl — LeanDojo-compatible replay layer
 // ============================================================================
 
+use leo3::instance::LeanAny;
 use leo3::meta::context::{CoreContext, CoreState, MetaContext, MetaState};
 use leo3::meta::environment::{ConstantKind, LeanConstantInfo, LeanEnvironment};
 use leo3::meta::expr::LeanExpr;
 use leo3::meta::metam::MetaMContext;
 use leo3::meta::name::LeanName;
 use leo3::meta::repl::{import_modules_with_exts, pp_exprs, run_tactic};
-use leo3::instance::LeanAny;
 use leo3::unbound::LeanUnbound;
 
 /// One replay state: the remaining goals (metavariable IDs) and a snapshot
@@ -185,14 +182,11 @@ impl Repl {
         leo3::with_lean(|lean| -> LeanResult<Self> {
             let metam = match &module {
                 Some(m) if m.ends_with(".lean") => {
-                    let src = std::fs::read_to_string(m).map_err(|e| {
-                        LeanError::other(&format!("cannot read {m}: {e}"))
-                    })?;
+                    let src = std::fs::read_to_string(m)
+                        .map_err(|e| LeanError::other(&format!("cannot read {m}: {e}")))?;
                     let env = import_modules_with_exts(lean, &["Lean"], 0, true)?;
                     let mut metam = MetaMContext::new(lean, env)?;
-                    let cmds = leo3::meta::repl::parse_file_commands(
-                        lean, metam.env(), &src, m,
-                    )?;
+                    let cmds = leo3::meta::repl::parse_file_commands(lean, metam.env(), &src, m)?;
                     for stx in &cmds {
                         let env2 = leo3::meta::repl::run_command(lean, &metam, stx)?;
                         metam.replace_env(env2);
@@ -244,10 +238,7 @@ impl Repl {
                 .collect::<Vec<_>>();
             let meta_state = metam.meta_state_snapshot();
             self.save(metam);
-            self.states.push(ReplState {
-                goals,
-                meta_state,
-            });
+            self.states.push(ReplState { goals, meta_state });
             Ok((self.states.len() - 1) as u64)
         })
         .map_err(to_py_err)
@@ -263,19 +254,14 @@ impl Repl {
             let st = self
                 .states
                 .get(state as usize)
-                .ok_or_else(|| {
-                    LeanError::other(&unknown_state_msg(state, self.states.len()))
-                })?;
+                .ok_or_else(|| LeanError::other(&unknown_state_msg(state, self.states.len())))?;
             let idx = goal_idx.unwrap_or(0);
-            let goal = st
-                .goals
-                .get(idx)
-                .ok_or_else(|| {
-                    LeanError::other(&format!(
-                        "no goal at index {idx} in state {state} (state has {} goals)",
-                        st.goals.len()
-                    ))
-                })?;
+            let goal = st.goals.get(idx).ok_or_else(|| {
+                LeanError::other(&format!(
+                    "no goal at index {idx} in state {state} (state has {} goals)",
+                    st.goals.len()
+                ))
+            })?;
             let goal = goal.bind(lean);
             let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), tactic)?;
             // Branch from the target state's Meta.State snapshot (None →
@@ -297,10 +283,7 @@ impl Repl {
             goals.extend(outcome.goals.into_iter().map(|g| g.unbind_mt()));
             let meta_state = metam.meta_state_snapshot();
             self.save(metam);
-            self.states.push(ReplState {
-                goals,
-                meta_state,
-            });
+            self.states.push(ReplState { goals, meta_state });
             Ok((self.states.len() - 1) as u64)
         })
         .map_err(to_py_err)
@@ -311,9 +294,7 @@ impl Repl {
         let st = self
             .states
             .get(state as usize)
-            .ok_or_else(|| {
-                PyRuntimeError::new_err(unknown_state_msg(state, self.states.len()))
-            })?;
+            .ok_or_else(|| PyRuntimeError::new_err(unknown_state_msg(state, self.states.len())))?;
         Ok(st.goals.len())
     }
 
@@ -322,9 +303,7 @@ impl Repl {
         let st = self
             .states
             .get(state as usize)
-            .ok_or_else(|| {
-                PyRuntimeError::new_err(unknown_state_msg(state, self.states.len()))
-            })?;
+            .ok_or_else(|| PyRuntimeError::new_err(unknown_state_msg(state, self.states.len())))?;
         leo3::with_lean(|lean| -> LeanResult<Vec<Goal>> {
             let mut metam = self.rebind(lean)?;
             let mut out = Vec::new();
@@ -354,18 +333,13 @@ impl Repl {
         let st = self
             .states
             .get(state as usize)
-            .ok_or_else(|| {
-                PyRuntimeError::new_err(unknown_state_msg(state, self.states.len()))
-            })?;
-        let g = st
-            .goals
-            .get(idx)
-            .ok_or_else(|| {
-                PyRuntimeError::new_err(format!(
-                    "no goal at index {idx} in state {state} (state has {} goals)",
-                    st.goals.len()
-                ))
-            })?;
+            .ok_or_else(|| PyRuntimeError::new_err(unknown_state_msg(state, self.states.len())))?;
+        let g = st.goals.get(idx).ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "no goal at index {idx} in state {state} (state has {} goals)",
+                st.goals.len()
+            ))
+        })?;
         leo3::with_lean(|lean| -> LeanResult<String> {
             let mut metam = self.rebind(lean)?;
             let gb = g.bind(lean);
@@ -409,7 +383,8 @@ impl Repl {
     }
 
     /// Number of replay states created so far (`0` before the first
-    /// `set_goal`). Valid state ids are `0..num_states()`.
+    /// `set_goal`). Valid state ids are `0..num_states()` (half-open — the
+    /// highest valid id is `num_states() - 1`).
     fn num_states(&self) -> usize {
         self.states.len()
     }
@@ -448,25 +423,16 @@ impl Repl {
             // constant's type is environment-fixed.
             let goal: Option<LeanBound<'_, LeanName>> = match state {
                 Some(state) => {
-                    let st = self
-                        .states
-                        .get(state as usize)
-                        .ok_or_else(|| {
-                            LeanError::other(&unknown_state_msg(
-                                state,
-                                self.states.len(),
-                            ))
-                        })?;
+                    let st = self.states.get(state as usize).ok_or_else(|| {
+                        LeanError::other(&unknown_state_msg(state, self.states.len()))
+                    })?;
                     let idx = goal_idx.unwrap_or(0);
-                    let g = st
-                        .goals
-                        .get(idx)
-                        .ok_or_else(|| {
-                            LeanError::other(&format!(
-                                "no goal at index {idx} in state {state} (state has {} goals)",
-                                st.goals.len()
-                            ))
-                        })?;
+                    let g = st.goals.get(idx).ok_or_else(|| {
+                        LeanError::other(&format!(
+                            "no goal at index {idx} in state {state} (state has {} goals)",
+                            st.goals.len()
+                        ))
+                    })?;
                     metam.replace_meta_state(st.meta_state.bind(lean).cast());
                     Some(g.bind(lean))
                 }
@@ -488,8 +454,7 @@ impl Repl {
             if let Ok(nm) = LeanName::from_components(lean, term) {
                 if let Some(cinfo) = LeanEnvironment::find(&env, &nm)? {
                     let ty = LeanConstantInfo::type_(&cinfo)?;
-                    let rendered =
-                        pp_exprs(&metam, &empty_lctx(lean), &empty_insts(lean), &[ty])?;
+                    let rendered = pp_exprs(&metam, &empty_lctx(lean), &empty_insts(lean), &[ty])?;
                     return Ok(format!("{term} : {}", rendered[0]));
                 }
             }
@@ -517,18 +482,13 @@ impl Repl {
             let tac = format!("have {decl_name} := {term}");
             let stx = leo3::meta::repl::parse_tactic(lean, metam.env(), &tac)?;
             let outcome = run_tactic(&mut metam, &goal, &stx, None)?;
-            let goal_after = outcome
-                .goals
-                .first()
-                .cloned()
-                .ok_or_else(|| {
+            let goal_after =
+                outcome.goals.first().cloned().ok_or_else(|| {
                     LeanError::other("internal error: check have produced no goals")
                 })?;
             let (hyps, _ty) = metam.goal_hyps_and_type_pp(&goal_after)?;
             let (_, pp_type) = hyps.last().ok_or_else(|| {
-                LeanError::other(
-                    "internal error: check declaration not found in goal context",
-                )
+                LeanError::other("internal error: check declaration not found in goal context")
             })?;
             Ok(format!("{term} : {pp_type}"))
         })
@@ -577,10 +537,7 @@ impl Repl {
 }
 
 /// `Lean.Name.toString : Name → String` (curried arity-1 pure function).
-fn leo3_name_to_string<'l>(
-    lean: Lean<'l>,
-    name: &LeanBound<'l, LeanName>,
-) -> LeanResult<String> {
+fn leo3_name_to_string<'l>(lean: Lean<'l>, name: &LeanBound<'l, LeanName>) -> LeanResult<String> {
     unsafe {
         extern "C" {
             #[link_name = "l_Lean_Name_toString"]
@@ -590,11 +547,8 @@ fn leo3_name_to_string<'l>(
             ) -> *mut ffi::lean_object;
         }
         ffi::lean_inc(name.as_ptr());
-        let closure = ffi::inline::lean_alloc_closure(
-            name_to_string as *mut std::ffi::c_void,
-            1u32,
-            0,
-        );
+        let closure =
+            ffi::inline::lean_alloc_closure(name_to_string as *mut std::ffi::c_void, 1u32, 0);
         let s = ffi::closure::lean_apply_1(closure, name.as_ptr());
         let s = LeanBound::<LeanString>::from_owned_ptr(lean, s);
         Ok(LeanString::cstr(&s)?.to_string())
@@ -603,21 +557,13 @@ fn leo3_name_to_string<'l>(
 
 /// Empty local context for pretty-printing closed (top-level) expressions.
 fn empty_lctx<'l>(lean: Lean<'l>) -> LeanBound<'l, LeanAny> {
-    unsafe {
-        LeanBound::from_owned_ptr(
-            lean,
-            ffi::meta::lean_mk_empty_local_ctx(ffi::lean_box(0)),
-        )
-    }
+    unsafe { LeanBound::from_owned_ptr(lean, ffi::meta::lean_mk_empty_local_ctx(ffi::lean_box(0))) }
 }
 
 /// Empty local-instance context for pretty-printing closed expressions.
 fn empty_insts<'l>(lean: Lean<'l>) -> LeanBound<'l, LeanAny> {
-    unsafe {
-        LeanBound::from_owned_ptr(lean, ffi::array::lean_mk_empty_array())
-    }
+    unsafe { LeanBound::from_owned_ptr(lean, ffi::array::lean_mk_empty_array()) }
 }
-
 
 /// `leotower._leotower` — the native extension module.
 #[pymodule]

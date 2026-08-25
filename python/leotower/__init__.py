@@ -172,7 +172,8 @@ class Repl:
     # -- replay introspection -----------------------------------------------
     def num_states(self) -> int:
         """Number of replay states created so far (``0`` before the first
-        :meth:`set_goal`).  Valid state ids are ``0..num_states()``."""
+        :meth:`set_goal`).  Valid state ids are ``0..num_states()``
+        (half-open — the highest valid id is ``num_states() - 1``)."""
         return self._repl.num_states()
 
     # -- queries -------------------------------------------------------------
