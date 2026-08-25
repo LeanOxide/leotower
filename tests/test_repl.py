@@ -908,3 +908,21 @@ def test_every_error_is_caught_by_except_runtime_error():
     ):
         with pytest.raises(RuntimeError):
             call()
+
+
+# ---------------------------------------------------------------------------
+# Repl.__repr__
+# ---------------------------------------------------------------------------
+# Deliberately the last tests in the file: every Repl() construction
+# consumes from the shared runtime's heartbeat budget (W-407), and the
+# tactic/goal-elaboration tests above run at the edge of that budget on
+# some machines. These tests only construct — repr is pure Python — so
+# they must not run before the elaboration-heavy tests.
+
+
+def test_repr_shows_imported_module():
+    """__repr__ shows the module the session was constructed with."""
+    assert repr(Repl()) == "<leotower.Repl module='Lean'>"
+    assert repr(Repl("tests/fixtures/repl_demo.lean")) == (
+        "<leotower.Repl module='tests/fixtures/repl_demo.lean'>"
+    )
