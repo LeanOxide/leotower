@@ -135,7 +135,11 @@ class Repl:
 
     # -- state management ---------------------------------------------------
     def set_goal(self, type_str: str) -> int:
-        """Set the root goal from a term string; returns state 0."""
+        """Create a new root goal state from a term string.
+
+        Existing states are unaffected; returns the new state's id (``0``
+        for the first call in a fresh session).
+        """
         try:
             return self._repl.set_goal(type_str)
         except RuntimeError as e:

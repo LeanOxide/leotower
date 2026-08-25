@@ -64,7 +64,7 @@ assert repl.get_num_goals(s4) == 0
 | Method | Behavior |
 |---|---|
 | `Repl(module="Lean")` | import a module (dot-separated names, or a `.lean` file path whose top-level commands are elaborated) into a fresh environment |
-| `Repl.set_goal(type_str)` | parse + elaborate a term as the root goal type; returns state 0 |
+| `Repl.set_goal(type_str)` | parse + elaborate a term as a new root goal state (existing states unaffected); returns the new state's id (`0` for the first call in a fresh session) |
 | `Repl.run_tac(state, tactic, goal_idx=0)` | apply a tactic to the `goal_idx`-th goal; unworked goals are preserved in the new state |
 | `Repl.run_tacs(state, tactics, goal_idx=0)` | apply a tactic sequence in order, one call end to end; returns the final state id |
 | `Repl.try_run_tac(state, tactic, goal_idx=0)` | non-raising `run_tac`: returns `(state_id, success)` — the new state and `True` on success, the source state and `False` on failure (no state appended); the session stays usable. The core idiom for proof-search / RL loops |
