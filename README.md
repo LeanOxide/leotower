@@ -72,6 +72,8 @@ assert repl.get_num_goals(s4) == 0
 | `Repl.get_goals(state)` | remaining goals as `Goal(hyps, ty, mvar)`, pretty-printed with Lean's real delaborator |
 | `Repl.get_num_goals(state)` | number of remaining goals |
 | `Repl.get_goal_pp(state, goal_idx=0)` | pretty-printed goal (hypotheses + `⊢ type`) |
+| `Repl.get_state_pp(state)` | pretty-print every goal of `state` in one string: `no goals` with 0 goals, exactly the `get_goal_pp(state, 0)` output for a single goal, numbered `goal[0]:\n<pp0>` blocks joined by a blank line for N goals |
+| `Goal.__str__` | standard goal display: one `name : type` line per hypothesis followed by `⊢ ty` (just `⊢ ty` with no hypotheses) — the same `hyps ⊢ type` shape as `get_goal_pp` |
 | `Repl.num_states()` | number of replay states created so far; valid ids are `0..num_states()` (half-open — highest valid id is `num_states() - 1`) |
 | `Repl.check(term, state=None, goal_idx=0)` | `#check`-style query: `"{term} : {type}"`; `state=None` checks in the root context, `state=N` in that goal's local context. A bare constant prints its declared type (as the real `#check` does, with implicit/universe arguments as binders); other terms are elaborated in the goal context |
 | `Repl.inspect(name)` | `#print`-style query: kind, type, and (for definitions/theorems/opaque constants) value, rendered by Lean's real pretty printer |

@@ -1,5 +1,8 @@
 """Smoke tests for the leotower native bindings."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 import leotower
@@ -44,3 +47,14 @@ def test_repeated_sessions():
         assert lean.nat_add(1, 2) == 3
     with leotower.with_lean() as lean:
         assert lean.nat_add(2, 3) == 5
+
+
+def test_version_matches_pyproject():
+    """leotower.__version__ matches the version declared in pyproject.toml
+    (importlib.metadata when the distribution metadata is installed,
+    hardcoded fallback otherwise)."""
+    pyproject = Path(leotower.__file__).resolve().parents[2] / "pyproject.toml"
+    declared = re.search(
+        r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M
+    ).group(1)
+    assert leotower.__version__ == declared

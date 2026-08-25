@@ -17,6 +17,14 @@ import os
 import sys
 
 from contextlib import contextmanager
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+try:
+    __version__ = _dist_version("leotower")
+except PackageNotFoundError:
+    # No installed distribution metadata (e.g. a source checkout without
+    # `maturin develop`). Keep in sync with the version in pyproject.toml.
+    __version__ = "0.1.0"
 
 
 def _extend_windows_dll_search_path() -> None:
@@ -57,7 +65,7 @@ _extend_windows_dll_search_path()
 
 from leotower._leotower import LeanSession, prepare_freethreaded_lean
 
-__all__ = ["with_lean", "LeanSession", "prepare_freethreaded_lean"]
+__all__ = ["__version__", "with_lean", "LeanSession", "prepare_freethreaded_lean"]
 
 
 @contextmanager
@@ -142,7 +150,11 @@ class Repl:
         top-level commands are elaborated into the session environment
         (``import`` lines are skipped).
         """
+        self._module = module
         self._repl = _Repl(module)
+
+    def __repr__(self):
+        return f"<leotower.Repl module={self._module!r}>"
 
     # -- state management ---------------------------------------------------
     def set_goal(self, type_str: str) -> int:
