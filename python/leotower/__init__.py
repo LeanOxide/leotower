@@ -90,6 +90,17 @@ class Goal:
         self.ty = ty
         self.mvar = mvar
 
+    def __str__(self):
+        """Standard goal display: one ``name : type`` line per hypothesis
+        followed by ``⊢ ty`` — the same ``hyps ⊢ type`` shape as
+        :meth:`Repl.get_goal_pp` (which renders via Lean's pretty printer,
+        e.g. grouping same-type hypotheses).  With no hypotheses the
+        string is just ``⊢ ty``.
+        """
+        lines = [f"{name} : {ty}" for name, ty in self.hyps]
+        lines.append(f"⊢ {self.ty}")
+        return "\n".join(lines)
+
     def __repr__(self):
         return f"Goal({self.hyps!r} ⊢ {self.ty})"
 
@@ -194,6 +205,28 @@ class Repl:
 
     def get_goal_pp(self, state: int, goal_idx: int = 0) -> str:
         return self._repl.get_goal_pp(state, goal_idx)
+
+    def get_state_pp(self, state: int) -> str:
+        """Pretty-print every goal of ``state`` in one string.
+
+        With 0 goals returns ``"no goals"``. With 1 goal returns exactly
+        :meth:`get_goal_pp` output for goal 0. With N goals the per-goal
+        pretty prints are numbered and joined with a blank line::
+
+            goal[0]:
+            <pp0>
+
+            goal[1]:
+            <pp1>
+        """
+        n = self.get_num_goals(state)
+        if n == 0:
+            return "no goals"
+        if n == 1:
+            return self.get_goal_pp(state, 0)
+        return "\n\n".join(
+            f"goal[{i}]:\n{self.get_goal_pp(state, i)}" for i in range(n)
+        )
 
     def run_tacs(self, state: int, tactics: "list[str]", goal_idx: int = 0) -> int:
         """Apply a sequence of tactics in order to the ``goal_idx``-th goal,
