@@ -94,6 +94,22 @@ class Goal:
         return f"Goal({self.hyps!r} ⊢ {self.ty})"
 
 
+class LeanError(RuntimeError):
+    """Base class for leotower Lean-operation errors.
+
+    A subclass of :class:`RuntimeError`, so existing ``except RuntimeError``
+    handlers keep working unchanged.  Raised by :class:`Repl` operations
+    that fail outside of tactic application: :meth:`Repl.set_goal`,
+    :meth:`Repl.check`, :meth:`Repl.inspect`, and :meth:`Repl.run_cmd`.
+    """
+
+
+class TacticError(LeanError):
+    """A tactic failed to parse, elaborate, or apply; the session and the
+    replay state stay usable.
+    """
+
+
 class Repl:
     """A LeanDojo-style replay session over the embedded Lean runtime.
 
@@ -120,20 +136,26 @@ class Repl:
     # -- state management ---------------------------------------------------
     def set_goal(self, type_str: str) -> int:
         """Set the root goal from a term string; returns state 0."""
-        return self._repl.set_goal(type_str)
+        try:
+            return self._repl.set_goal(type_str)
+        except RuntimeError as e:
+            raise LeanError(str(e)) from e
 
     def run_tac(self, state: int, tactic: str, goal_idx: int = 0) -> int:
         """Apply ``tactic`` to the ``goal_idx``-th goal of ``state`` (default
         0); returns the new state id.  Multi-goal states (from ``induction``,
         ``split``, ``cases``) keep their unworked goals in the new state, so
         a proof can advance goal by goal in any order.  Invalid tactics
-        raise :class:`RuntimeError` (the interpreter and the replay state
+        raise :class:`TacticError` (the interpreter and the replay state
         stay intact)."""
-        return self._repl.run_tac(state, tactic, goal_idx)
+        try:
+            return self._repl.run_tac(state, tactic, goal_idx)
+        except RuntimeError as e:
+            raise TacticError(str(e)) from e
 
     def try_run_tac(self, state: int, tactic: str, goal_idx: int = 0) -> "tuple[int, bool]":
         """Non-raising variant of :meth:`run_tac`: returns
-        ``(state_id, success)`` instead of raising :class:`RuntimeError`.
+        ``(state_id, success)`` instead of raising :class:`TacticError`.
 
         On success the new state id and ``True`` are returned. On failure
         (unknown state, out-of-range goal, or tactic parse/elaboration/run
@@ -152,12 +174,15 @@ class Repl:
         The command is parsed with Lean's real parser and elaborated by the
         embedded frontend (``Lean.Elab.Command.elabCommandTopLevel``); the
         resulting environment is installed for subsequent calls. Commands
-        that fail elaboration raise :class:`RuntimeError` (the session stays
+        that fail elaboration raise :class:`LeanError` (the session stays
         usable). Commands do not create replay states and return nothing —
         use :meth:`inspect` / :meth:`check` for declaration and term
         queries, and only run environment-mutating commands here.
         """
-        self._repl.run_cmd(cmd)
+        try:
+            self._repl.run_cmd(cmd)
+        except RuntimeError as e:
+            raise LeanError(str(e)) from e
 
     # -- goal queries -------------------------------------------------------
     def get_num_goals(self, state: int) -> int:
@@ -175,7 +200,7 @@ class Repl:
         starting from ``state``; returns the final state id.  This is the
         replay/RL loop idiom — apply ``[t1, t2, ...]`` without threading
         intermediate state ids by hand.  Tactics are applied left to right;
-        the first one to fail raises :class:`RuntimeError` and the returned
+        the first one to fail raises :class:`TacticError` and the returned
         state is that of the last successful tactic (the session stays
         usable).  If ``tactics`` is empty, ``state`` is returned unchanged.
         """
@@ -188,7 +213,7 @@ class Repl:
         """Non-raising variant of :meth:`run_tacs`: apply a sequence of
         tactics in order to the ``goal_idx``-th goal, starting from
         ``state``, and return ``(state_id, success)`` instead of raising
-        :class:`RuntimeError`.
+        :class:`TacticError`.
 
         If every tactic succeeds, ``(final_state, True)`` is returned. If
         one fails midway, the state after the last successful tactic and
@@ -236,13 +261,16 @@ class Repl:
         Names are resolved at the meta level: use fully qualified names
         (command-level scopes such as ``open`` do not apply). Elaboration
         failures (unknown identifiers, type errors) raise
-        :class:`RuntimeError` with Lean's error message; the replay session
+        :class:`LeanError` with Lean's error message; the replay session
         is not modified.
 
         >>> repl.check("Nat.add")
         'Nat.add : Nat → Nat → Nat'
         """
-        return self._repl.check(term, state, goal_idx)
+        try:
+            return self._repl.check(term, state, goal_idx)
+        except RuntimeError as e:
+            raise LeanError(str(e)) from e
 
     def inspect(self, name: str) -> str:
         """``#print``-style query: show the declaration's kind, type, and
@@ -252,15 +280,18 @@ class Repl:
         >>> repl.inspect("Nat.add")
         'def Nat.add : Nat → Nat → Nat := ...'
 
-        Unknown declarations raise :class:`RuntimeError`. Declarations
+        Unknown declarations raise :class:`LeanError`. Declarations
         created with :meth:`run_cmd` (``def``, ``axiom``, ...) are visible
         here.
         """
-        return self._repl.inspect(name)
+        try:
+            return self._repl.inspect(name)
+        except RuntimeError as e:
+            raise LeanError(str(e)) from e
 
     # -- environment queries ------------------------------------------------
     def env_has_const(self, name: str) -> bool:
         return self._repl.env_has_const(name)
 
 
-__all__ += ["Repl", "Goal"]
+__all__ += ["Repl", "Goal", "LeanError", "TacticError"]
