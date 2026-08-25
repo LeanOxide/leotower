@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from leotower import Repl, LeanError, TacticError
+from leotower import Repl, Goal, LeanError, TacticError
 
 # Windows: constructing Repl() aborts the whole process (misaligned pointer
 # dereference in leo3-ffi, exit 127, no Python traceback) — tracked in W-395.
@@ -571,6 +571,89 @@ def test_try_run_tacs_empty_returns_state_true():
     assert s == s0
 
 
+# ---------------------------------------------------------------------------
+# Whole-state pretty printing: get_state_pp / Goal.__str__
+# ---------------------------------------------------------------------------
+
+
+# Repl() construction is the expensive part (it re-imports and re-elaborates
+# the Lean module), and a process has a limited budget of such constructions
+# before the shared runtime hits Lean's maxHeartbeats limit (W-407). The
+# whole-state pretty-printing tests therefore share ONE session and a
+# precomputed state chain; every replay state stays queryable after the
+# session advances (see test_query_old_state_after_session_advances).
+_STATE_CHAIN = None
+
+
+def _state_chain():
+    """(repl, s0, s1, s2, s3, s4) for ``ADD_COMM``:
+    s0: root (1 goal)
+    s1: after ``intro n m`` (1 goal, two hypotheses)
+    s2: after ``induction n`` (2 goals)
+    s3: base case closed (1 goal)
+    s4: closed (0 goals)
+    """
+    global _STATE_CHAIN
+    if _STATE_CHAIN is None:
+        repl = Repl()
+        s0 = repl.set_goal(ADD_COMM)
+        s1 = repl.run_tac(s0, "intro n m")
+        s2 = repl.run_tac(s1, "induction n")
+        s3 = repl.run_tac(s2, "simp only [Nat.zero_add, Nat.add_zero]", goal_idx=0)
+        s4 = repl.run_tac(s3, "simp only [Nat.add_comm, Nat.add_succ]")
+        _STATE_CHAIN = (repl, s0, s1, s2, s3, s4)
+    return _STATE_CHAIN
+
+
+def test_get_state_pp_single_goal_matches_get_goal_pp():
+    repl, _, s1, _, _, _ = _state_chain()
+    assert repl.get_num_goals(s1) == 1
+    assert repl.get_state_pp(s1) == repl.get_goal_pp(s1, 0)
+
+
+def test_get_state_pp_closed_state_returns_no_goals():
+    repl, _, _, _, _, s4 = _state_chain()
+    assert repl.get_num_goals(s4) == 0
+    assert repl.get_state_pp(s4) == "no goals"
+
+
+def test_get_state_pp_multi_goal_numbered():
+    """A multi-goal state (induction) prints as numbered, fully
+    pretty-printed goals joined by a blank line."""
+    repl, _, _, s2, _, _ = _state_chain()
+    assert repl.get_num_goals(s2) == 2
+    pp0 = repl.get_goal_pp(s2, 0)
+    pp1 = repl.get_goal_pp(s2, 1)
+    assert repl.get_state_pp(s2) == f"goal[0]:\n{pp0}\n\ngoal[1]:\n{pp1}"
+    # Base and step goals are distinct, complete goal displays.
+    assert "⊢" in pp0 and "⊢" in pp1
+    assert "0 + m" in pp0
+    assert "1 + m" in pp1
+
+
+def test_goal_str_hyps_and_type():
+    g = Goal([("n", "Nat"), ("m", "Nat")], "n + m = m + n", "m✝")
+    assert str(g) == "n : Nat\nm : Nat\n⊢ n + m = m + n"
+    # The debug repr is unchanged.
+    assert repr(g) == "Goal([('n', 'Nat'), ('m', 'Nat')] ⊢ n + m = m + n)"
+
+
+def test_goal_str_no_hyps():
+    assert str(Goal([], "True", "m✝")) == "⊢ True"
+
+
+def test_goal_str_matches_get_goal_pp_shape():
+    """str(Goal) and get_goal_pp have the same ``hyps ⊢ type`` shape for
+    the same goal: each hypothesis as ``name : type``, then ``⊢ ty``."""
+    repl, _, s1, _, _, _ = _state_chain()
+    g = repl.get_goals(s1)[0]
+    s = str(g)
+    pp = repl.get_goal_pp(s1, 0)
+    assert s.endswith(f"⊢ {g.ty}")
+    assert pp.endswith(f"⊢ {g.ty}")
+    for name, ty in g.hyps:
+        assert f"{name} : {ty}" in s
+        assert name in pp and ty in pp
 # ---------------------------------------------------------------------------
 # Query commands: check (#check), inspect (#print), num_states
 # ---------------------------------------------------------------------------
