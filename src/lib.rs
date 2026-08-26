@@ -177,25 +177,66 @@ impl std::ops::Deref for EnvRegions {
 
 impl Drop for EnvRegions {
     fn drop(&mut self) {
-        // W-417 stopgap: snapshot the olean VMAs before freeing so we can
-        // diff out the regions `free_regions` unmaps and record them for a
-        // later cross-set import to re-map (reviving dangling cache keys).
-        // Same-set imports self-heal and are not affected — and we must not
-        // pin the base here, because holding it would force every subsequent
-        // same-set import onto the heap and inflate RSS. See
-        // `leo3::meta::keepalive` for the full rationale.
-        let before = leo3::meta::snapshot_olean_vmras();
-        let unbound = unsafe { ManuallyDrop::take(&mut self.env) };
-        let env_ptr = unbound.into_ptr();
-        let _ = leo3::with_lean(|lean| {
-            let bound = unsafe { LeanBound::from_owned_ptr(lean, env_ptr) };
-            unsafe { bound.free_regions() }
-        });
-        let after = leo3::meta::snapshot_olean_vmras();
-        let freed = leo3::meta::diff_freed_vmras(&before, &after);
-        let modules: Vec<&str> = self.modules.iter().map(|s| s.as_str()).collect();
-        leo3::meta::record_freed_set(&modules, freed);
+        #[cfg(target_os = "linux")]
+        {
+            // W-417 stopgap: snapshot the lean VMAs before freeing so we can
+            // diff out the regions `free_regions` unmaps and record them for a
+            // later cross-set import to re-map (reviving dangling cache keys).
+            // Same-set imports self-heal and are not affected — and we must
+            // not pin the base here, because holding it would force every
+            // subsequent same-set import onto the heap and inflate RSS. See
+            // `leo3::meta::keepalive` for the full rationale.
+            let before = leo3::meta::snapshot_lean_vmras();
+            if before.is_empty() {
+                // No lean regions are mapped (or the snapshot was unavailable
+                // / the stopgap is disabled): we cannot track what
+                // `free_regions` would unmap, so we cannot revive dangling
+                // keys afterwards. Release without freeing the regions (leak,
+                // but no crash).
+                let _ = unsafe { ManuallyDrop::take(&mut self.env) };
+                return;
+            }
+            let unbound = unsafe { ManuallyDrop::take(&mut self.env) };
+            let env_ptr = unbound.into_ptr();
+            let _ = leo3::with_lean(|lean| {
+                let bound = unsafe { LeanBound::from_owned_ptr(lean, env_ptr) };
+                unsafe { bound.free_regions() }
+            });
+            let after = leo3::meta::snapshot_lean_vmras();
+            let freed = leo3::meta::diff_freed_vmras(&before, &after);
+            let modules: Vec<&str> = self.modules.iter().map(|s| s.as_str()).collect();
+            leo3::meta::record_freed_set(&modules, freed);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            // The keepalive stopgap is Linux-only (it reads /proc/self/maps and
+            // relies on MAP_FIXED_NOREPLACE). On other platforms we release the
+            // environment with a plain `lean_dec`, leaking the compacted import
+            // regions (the W-407 cost) but — crucially — NOT calling
+            // `free_regions`, which would dangle the global symbol-cache keys
+            // and crash the next cross-set import.
+            let _ = unsafe { ManuallyDrop::take(&mut self.env) };
+        }
     }
+}
+
+/// W-417 stopgap: re-map the freed cross-set lean regions before a cross-set
+/// import, and **block the import** if any region cannot be safely re-mapped —
+/// proceeding would risk the original dangling-key SIGSEGV. The stopgap is
+/// Linux-only, so this is a no-op on other platforms.
+#[cfg(target_os = "linux")]
+fn block_on_remap(importing: &[&str]) -> LeanResult<()> {
+    leo3::meta::remap_cross_set_bases(importing).map_err(|errs| {
+        LeanError::other(&format!(
+            "cannot revive freed import regions before importing {importing:?}: {}",
+            errs.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; ")
+        ))
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn block_on_remap(_importing: &[&str]) -> LeanResult<()> {
+    Ok(())
 }
 
 /// A LeanDojo-style replay session over the embedded Lean runtime.
@@ -327,9 +368,10 @@ impl Repl {
                 Some(m) if m.ends_with(".lean") => {
                     let src = std::fs::read_to_string(m)
                         .map_err(|e| LeanError::other(&format!("cannot read {m}: {e}")))?;
-                    // W-417 stopgap: re-map freed cross-set olean regions before
-                    // the import's symbol lookups dereference dangling cache keys.
-                    leo3::meta::remap_cross_set_bases(&["Lean"]);
+                    // W-417 stopgap: re-map freed cross-set lean regions before
+                    // the import's symbol lookups dereference dangling cache
+                    // keys; block the import if that cannot be done safely.
+                    block_on_remap(&["Lean"])?;
                     let env = import_modules_with_exts(lean, &["Lean"], 0, true)?;
                     let mut metam = MetaMContext::new(lean, env)?;
                     let cmds = leo3::meta::repl::parse_file_commands(lean, metam.env(), &src, m)?;
@@ -342,9 +384,10 @@ impl Repl {
                 _ => {
                     let name = module.as_deref().unwrap_or("Lean");
                     let names: &[&str] = &[name];
-                    // W-417 stopgap: re-map freed cross-set olean regions before
-                    // the import's symbol lookups dereference dangling cache keys.
-                    leo3::meta::remap_cross_set_bases(names);
+                    // W-417 stopgap: re-map freed cross-set lean regions before
+                    // the import's symbol lookups dereference dangling cache
+                    // keys; block the import if that cannot be done safely.
+                    block_on_remap(names)?;
                     let env = import_modules_with_exts(lean, names, 0, true)?;
                     (MetaMContext::new(lean, env)?, vec![name.to_string()])
                 }
