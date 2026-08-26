@@ -4,6 +4,7 @@
 //! This is the native extension module `leotower._leotower`.  The ergonomic
 //! Python-facing surface lives in `python/leotower/__init__.py`.
 
+use std::mem::ManuallyDrop;
 use leo3::ffi;
 use leo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
@@ -116,6 +117,87 @@ struct ReplState {
     meta_state: LeanUnbound<LeanAny>,
 }
 
+/// An environment reference that releases its compacted import regions when
+/// the owning [`Repl`] is dropped (W-407 Bug A — per-`Repl` leak of
+/// ~1.4–1.6 GB).
+///
+/// `import_modules_with_exts` compacts each module's olean payload into C++
+/// `compacted_region` buffers attached to the environment header. The
+/// reference-counted drop path (`lean_dec`) never frees those buffers — only
+/// `Environment.freeRegions` does, and the stock runtime only invokes it from
+/// the one-shot `lean` CLI path. Without this release, every `Repl()`
+/// permanently leaks one ~1.4–1.6 GB buffer.
+///
+/// The inner `ManuallyDrop` makes this type's `Drop` the only place the
+/// environment's reference count is released: it hands the raw pointer to
+/// `free_regions` (which `dec`s once and frees the regions). It also lets
+/// [`Self::swap_inner`] replace the environment in place (used by
+/// [`Repl::save`]) without triggering a region free.
+///
+/// **This must remain the last field of [`Repl`].** With no custom `Drop` on
+/// [`Repl`], Rust drops struct fields in declaration order, so the
+/// environment outlives every object derived from its import (the four
+/// Core/Meta parts and the replay states) — exactly `free_regions`' safety
+/// precondition.
+struct EnvRegions {
+    env: ManuallyDrop<LeanUnbound<LeanEnvironment>>,
+    /// Top-level module names imported into this environment, kept for the
+    /// W-417 keepalive (see [`Drop for EnvRegions`]).
+    modules: Vec<String>,
+}
+
+impl EnvRegions {
+    fn new(env: LeanUnbound<LeanEnvironment>, modules: Vec<String>) -> Self {
+        Self {
+            env: ManuallyDrop::new(env),
+            modules,
+        }
+    }
+
+    /// Replace the inner environment in place, returning the old one. Does
+    /// **not** free the old environment's regions: the replacement shares the
+    /// old environment's region buffers (environments grow in place), so the
+    /// caller must release the old environment with a plain `lean_dec` (see
+    /// [`Repl::save`]).
+    fn swap_inner(
+        &mut self,
+        new_env: LeanUnbound<LeanEnvironment>,
+    ) -> LeanUnbound<LeanEnvironment> {
+        let mut old_md = std::mem::replace(&mut self.env, ManuallyDrop::new(new_env));
+        unsafe { ManuallyDrop::take(&mut old_md) }
+    }
+}
+
+impl std::ops::Deref for EnvRegions {
+    type Target = LeanUnbound<LeanEnvironment>;
+    fn deref(&self) -> &Self::Target {
+        &self.env
+    }
+}
+
+impl Drop for EnvRegions {
+    fn drop(&mut self) {
+        // W-417 stopgap: snapshot the olean VMAs before freeing so we can
+        // diff out the regions `free_regions` unmaps and record them for a
+        // later cross-set import to re-map (reviving dangling cache keys).
+        // Same-set imports self-heal and are not affected — and we must not
+        // pin the base here, because holding it would force every subsequent
+        // same-set import onto the heap and inflate RSS. See
+        // `leo3::meta::keepalive` for the full rationale.
+        let before = leo3::meta::snapshot_olean_vmras();
+        let unbound = unsafe { ManuallyDrop::take(&mut self.env) };
+        let env_ptr = unbound.into_ptr();
+        let _ = leo3::with_lean(|lean| {
+            let bound = unsafe { LeanBound::from_owned_ptr(lean, env_ptr) };
+            unsafe { bound.free_regions() }
+        });
+        let after = leo3::meta::snapshot_olean_vmras();
+        let freed = leo3::meta::diff_freed_vmras(&before, &after);
+        let modules: Vec<&str> = self.modules.iter().map(|s| s.as_str()).collect();
+        leo3::meta::record_freed_set(&modules, freed);
+    }
+}
+
 /// A LeanDojo-style replay session over the embedded Lean runtime.
 ///
 /// State 0 is the root: after `set_goal` it holds the initial goal. Each
@@ -124,7 +206,6 @@ struct ReplState {
 /// instead of crashing the interpreter.
 #[pyclass]
 pub struct Repl {
-    env: LeanUnbound<LeanEnvironment>,
     core_ctx: LeanUnbound<CoreContext>,
     core_state: LeanUnbound<CoreState>,
     /// Monotonic counter for the `have`-declaration names used by
@@ -133,6 +214,10 @@ pub struct Repl {
     meta_ctx: LeanUnbound<MetaContext>,
     meta_state: LeanUnbound<MetaState>,
     states: Vec<ReplState>,
+    /// The imported environment; released (compacted import regions freed) by
+    /// [`EnvRegions::drop`] when the `Repl` is destroyed. Declared last so it
+    /// outlives every object derived from it.
+    env: EnvRegions,
 }
 
 /// A goal as seen by Python: hypotheses `(name, type)` plus the goal type.
@@ -162,7 +247,13 @@ impl Repl {
 
     fn save(&mut self, metam: MetaMContext<'_>) {
         let (env, core_ctx, core_state, meta_ctx, meta_state) = metam.into_parts();
-        self.env = env.unbind_mt();
+        // Swap the environment in place WITHOUT free_regions on the old env:
+        // the replacement shares the old env's region buffers (environments
+        // grow in place), so freeing them here would corrupt the live
+        // session. Release the old env with a plain `lean_dec`; its regions
+        // are freed only when the final env is dropped.
+        let old_env = self.env.swap_inner(env.unbind_mt());
+        drop(old_env);
         self.core_ctx = core_ctx.unbind_mt();
         self.core_state = core_state.unbind_mt();
         self.meta_ctx = meta_ctx.unbind_mt();
@@ -232,10 +323,13 @@ impl Repl {
     #[pyo3(signature = (module=None))]
     fn new(module: Option<String>) -> PyResult<Self> {
         leo3::with_lean(|lean| -> LeanResult<Self> {
-            let metam = match &module {
+            let (metam, modules) = match &module {
                 Some(m) if m.ends_with(".lean") => {
                     let src = std::fs::read_to_string(m)
                         .map_err(|e| LeanError::other(&format!("cannot read {m}: {e}")))?;
+                    // W-417 stopgap: re-map freed cross-set olean regions before
+                    // the import's symbol lookups dereference dangling cache keys.
+                    leo3::meta::remap_cross_set_bases(&["Lean"]);
                     let env = import_modules_with_exts(lean, &["Lean"], 0, true)?;
                     let mut metam = MetaMContext::new(lean, env)?;
                     let cmds = leo3::meta::repl::parse_file_commands(lean, metam.env(), &src, m)?;
@@ -243,17 +337,21 @@ impl Repl {
                         let env2 = leo3::meta::repl::run_command(lean, &metam, stx)?;
                         metam.replace_env(env2);
                     }
-                    metam
+                    (metam, vec!["Lean".to_string()])
                 }
                 _ => {
-                    let names: &[&str] = &[module.as_deref().unwrap_or("Lean")];
+                    let name = module.as_deref().unwrap_or("Lean");
+                    let names: &[&str] = &[name];
+                    // W-417 stopgap: re-map freed cross-set olean regions before
+                    // the import's symbol lookups dereference dangling cache keys.
+                    leo3::meta::remap_cross_set_bases(names);
                     let env = import_modules_with_exts(lean, names, 0, true)?;
-                    MetaMContext::new(lean, env)?
+                    (MetaMContext::new(lean, env)?, vec![name.to_string()])
                 }
             };
             let (env, core_ctx, core_state, meta_ctx, meta_state) = metam.into_parts();
             Ok(Repl {
-                env: env.unbind_mt(),
+                env: EnvRegions::new(env.unbind_mt(), modules),
                 core_ctx: core_ctx.unbind_mt(),
                 core_state: core_state.unbind_mt(),
                 check_counter: 0,
