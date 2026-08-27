@@ -911,6 +911,37 @@ def test_every_error_is_caught_by_except_runtime_error():
 
 
 # ---------------------------------------------------------------------------
+# W-417: dropping a heap-backed (concurrent same-set) Repl must not dangle
+# native symbol-cache keys.
+# ---------------------------------------------------------------------------
+def test_second_repl_drop_leaks_and_third_import_survives():
+    """A second Repl over the same module set is heap-backed: the first Repl
+    holds the deterministic file bases, so the second import's regions fall
+    back to the heap (same region count, but no new file VMAs). Its env is
+    therefore *not* safe to free — dropping it must leak the env rather than
+    `free_regions` it, or the freed heap regions would dangle keys in the
+    native symbol cache and the next import would segfault. A fresh importer
+    afterwards must work.
+    """
+    import gc
+
+    repl_a = Repl()
+    repl_b = Repl()  # alive with repl_a -> heap-backed (repl_a holds the bases)
+    assert repl_a.env_has_const("Nat.add")
+    assert repl_b.env_has_const("Nat.add")
+    # Drop B first (heap-backed -> leaked, no free_regions), then A
+    # (file-backed -> freed). Neither free may dangle a cache key.
+    del repl_b
+    del repl_a
+    gc.collect()
+    # A fresh importer must succeed (no segfault): B's leaked env still owns
+    # its heap regions, and A's freed file regions are re-mappable.
+    repl_c = Repl()
+    s = repl_c.set_goal(ADD_COMM)
+    assert repl_c.get_num_goals(repl_c.run_tac(s, "intro n m")) == 1
+
+
+# ---------------------------------------------------------------------------
 # Repl.__repr__
 # ---------------------------------------------------------------------------
 # Deliberately the last tests in the file: every Repl() construction
