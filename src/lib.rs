@@ -221,10 +221,20 @@ impl Drop for EnvRegions {
             // record steps run on caller threads and would otherwise interleave
             // with this free and corrupt the freed-set record).
             let _lifecycle = leo3::meta::lifecycle_lock();
+            // Quarantined: a prior destructive free failed in a way that could
+            // not be proven fully recovered. Do not free (it could create more
+            // dangling keys that no re-map would revive); leak instead.
+            if leo3::meta::keepalive_poisoned() {
+                eprintln!("leotower: keepalive is quarantined; leaking env instead of freeing");
+                let _ = unsafe { ManuallyDrop::take(&mut self.env) };
+                return;
+            }
             // `self.env` is a live environment this `EnvRegions` owns (the last
-            // live reference); the typed count API reads it without exposing a
-            // raw pointer.
-            let region_count = leo3::meta::environment_region_count(&self.env);
+            // live reference). `environment_region_count` is `unsafe`: it walks
+            // the pinned `Environment` layout, and the type cannot prove the
+            // object is a real environment (`LeanUnbound::cast` can forge one).
+            // The contract holds: `self.env` is a genuine, live environment.
+            let region_count = unsafe { leo3::meta::environment_region_count(&self.env) };
             let should_free = self.trackable
                 && leo3::meta::safe_to_free_regions(region_count, self.file_vmas_added);
             if !should_free {
@@ -245,37 +255,79 @@ impl Drop for EnvRegions {
                     return;
                 }
             };
+            // An untrackable region (its snapshot `stat` failed, or it was
+            // deleted) cannot have its identity re-verified on re-map, so
+            // freeing it would leave an unrecoverable dangling key. Leak the
+            // whole env rather than free it.
+            if before.iter().any(|v| !v.size_known) {
+                eprintln!(
+                    "leotower: an import region was not trackable at snapshot time; leaking env instead of freeing"
+                );
+                let _ = unsafe { ManuallyDrop::take(&mut self.env) };
+                return;
+            }
             let unbound = unsafe { ManuallyDrop::take(&mut self.env) };
             let env_ptr = unbound.into_ptr();
-            // All regions verified file-backed: free, then diff out the regions
-            // `free_regions` unmapped and record them for a later cross-set
-            // import to re-map (reviving dangling cache keys).
+            // All regions verified file-backed and trackable: free, then record
+            // the regions `free_regions` unmapped for a later cross-set import
+            // to re-map (reviving dangling cache keys).
             let free_result = leo3::with_lean(|lean| {
                 let bound = unsafe { LeanBound::from_owned_ptr(lean, env_ptr) };
                 unsafe { bound.free_regions() }
             });
-            if let Err(e) = free_result {
-                // The free failed; the region state is uncertain, so do not
-                // record it as if the free succeeded.
-                eprintln!(
-                    "leotower: free_regions failed during EnvRegions drop: {e}; freed regions not recorded"
-                );
-                return;
+            // `free_regions` is a *non-atomic* `forM CompactedRegion.free`: an
+            // error can occur after the first regions are already unmapped,
+            // leaving them dangling. Never leave that unrecorded — the next
+            // cross-set import would dereference the dangling keys. Recover
+            // what we can; when we cannot, quarantine the process.
+            let after = leo3::meta::snapshot_lean_vmras();
+            match &free_result {
+                Err(e) => match &after {
+                    // Post-state readable: record exactly what was unmapped.
+                    Ok(a) => {
+                        let freed = leo3::meta::diff_freed_vmras(&before, a);
+                        let n = freed.len();
+                        leo3::meta::record_freed_set(&modules, freed);
+                        eprintln!(
+                            "leotower: free_regions failed during drop ({e}); recovered \
+                             {} freed region(s) so a later cross-set import revives them",
+                            n
+                        );
+                    }
+                    // Post-state unreadable too: we cannot determine the freed
+                    // set. Quarantine — no further destructive free (future
+                    // drops leak) and no further import (the re-map blocks), so
+                    // the dangling keys can never be dereferenced.
+                    Err(e2) => {
+                        leo3::meta::poison_keepalive();
+                        eprintln!(
+                            "leotower: free_regions failed ({e}) AND /proc/self/maps unreadable \
+                             ({e2}) during drop; CANNOT determine freed regions -> keepalive \
+                             QUARANTINED (future envs leak, imports blocked)"
+                        );
+                    }
+                },
+                Ok(()) => match &after {
+                    // Normal path: the free succeeded; record precisely what it
+                    // unmapped.
+                    Ok(a) => {
+                        let freed = leo3::meta::diff_freed_vmras(&before, a);
+                        leo3::meta::record_freed_set(&modules, freed);
+                    }
+                    // Free succeeded but post-state unreadable: every region of
+                    // this env was unmapped. In the stopgap's serial file-backed
+                    // model `before` is exactly this env's regions, so record it
+                    // for a best-effort revive (a later cross-set import re-maps
+                    // it; an occupied address just fails the no-clobber remap).
+                    Err(e) => {
+                        leo3::meta::record_freed_set(&modules, before.clone());
+                        eprintln!(
+                            "leotower: free_regions succeeded but /proc/self/maps unreadable \
+                             ({e}); recording the pre-free VMA set as a best-effort revive"
+                        );
+                    }
+                },
             }
-            // The free already ran; if we cannot read the post-free state we
-            // cannot record the freed regions. Rare and best-effort: log and do
-            // not record (a future cross-set import simply won't revive them).
-            let after = match leo3::meta::snapshot_lean_vmras() {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!(
-                        "leotower: cannot read /proc/self/maps after free_regions ({e}); freed regions not recorded"
-                    );
-                    return;
-                }
-            };
-            let freed = leo3::meta::diff_freed_vmras(&before, &after);
-            leo3::meta::record_freed_set(&modules, freed);
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -919,4 +971,56 @@ fn _leotower(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Repl>()?;
     m.add_class::<Goal>()?;
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod quarantine_test {
+    use super::*;
+
+    /// Count the `/proc/self/maps` lines backed by a lean import-region file.
+    fn lean_file_vma_count() -> u64 {
+        std::fs::read_to_string("/proc/self/maps")
+            .map(|maps| {
+                maps.lines()
+                    .filter(|l| {
+                        let path = l.split_whitespace().nth(5).unwrap_or("");
+                        path.ends_with(".olean")
+                            || path.ends_with(".ir")
+                            || path.ends_with(".server")
+                            || path.ends_with(".private")
+                    })
+                    .count() as u64
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn drop_leaks_when_quarantined() {
+        // Once the keepalive is quarantined (a prior destructive `free_regions`
+        // failed in a way that could not be proven fully recovered), a
+        // file-backed env must LEAK on drop — no `free_regions` — because
+        // freeing could create more dangling keys that no re-map would revive.
+        // This exercises the *real* destructor path. It poisons the
+        // process-wide one-way latch, so it must be the last test to run in
+        // this binary (leotower currently has no other Rust tests).
+        let (env, file_vmas) = leo3::test_with_lean(|lean| {
+            let before = leo3::meta::snapshot_lean_vmras().expect("maps readable");
+            let env = import_modules_with_exts(lean, &["Lean"], 0, true)
+                .expect("import Lean")
+                .unbind_mt();
+            let after = leo3::meta::snapshot_lean_vmras().expect("maps readable");
+            let added = leo3::meta::diff_added_vmras(&before, &after).len() as u64;
+            (env, added)
+        });
+        let before = lean_file_vma_count();
+        let regions = EnvRegions::new(env, vec!["Lean".to_string()], file_vmas);
+        leo3::meta::poison_keepalive();
+        assert!(leo3::meta::keepalive_poisoned());
+        std::mem::drop(regions); // poisoned -> leak, no free_regions
+        assert_eq!(
+            lean_file_vma_count(),
+            before,
+            "a quarantined drop must leak the env (no free_regions); the file VMAs stay mapped"
+        );
+    }
 }
