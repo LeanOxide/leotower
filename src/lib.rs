@@ -149,21 +149,34 @@ struct EnvRegions {
     /// drop time to decide whether *every* region is file-backed and therefore
     /// safe to `free_regions` (see [`Drop for EnvRegions`]).
     file_vmas_added: u64,
-    /// True while the current environment is the one tracked at import time.
-    /// A [`Repl::save`] swap replaces the environment in place, so the new
-    /// environment's file-backed-ness is not tracked; the old one is released
-    /// with a plain `lean_dec` and the replacement is conservatively leaked at
-    /// drop (never freed, so no key can dangle).
+    /// The lean file VMAs this environment's import added (the import-time
+    /// `/proc/self/maps` range diff). On a safe free, the set recorded for a
+    /// later cross-set re-map is diffed against a post-free snapshot from *this*
+    /// per-environment set — never a process-wide snapshot, which would conflate
+    /// a second environment's live regions into this one's record (W-417).
+    imported_vmras: Vec<leo3::meta::LeanVma>,
+    /// True while the file-backed count computed at import time is trustworthy.
+    /// False when the import window showed identity churn on a pre-existing
+    /// mapping (its backing file modified/unlinked/recreated) — then
+    /// `file_vmas_added` is unreliable and the drop gate leaks instead of
+    /// risking a free of a heap-mixed environment.
     trackable: bool,
 }
 
 impl EnvRegions {
-    fn new(env: LeanUnbound<LeanEnvironment>, modules: Vec<String>, file_vmas_added: u64) -> Self {
+    fn new(
+        env: LeanUnbound<LeanEnvironment>,
+        modules: Vec<String>,
+        file_vmas_added: u64,
+        imported_vmras: Vec<leo3::meta::LeanVma>,
+        trackable: bool,
+    ) -> Self {
         Self {
             env: ManuallyDrop::new(env),
             modules,
             file_vmas_added,
-            trackable: true,
+            imported_vmras,
+            trackable,
         }
     }
 
@@ -242,24 +255,16 @@ impl Drop for EnvRegions {
                 let _ = unsafe { ManuallyDrop::take(&mut self.env) };
                 return;
             }
-            // Fail closed: if we cannot establish the pre-free VMA state we
-            // cannot record what the free unmapped, so freeing would dangle
-            // keys that no future re-map would ever revive. Leak instead.
-            let before = match leo3::meta::snapshot_lean_vmras() {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!(
-                        "leotower: cannot read /proc/self/maps before free_regions ({e}); leaking env instead of freeing"
-                    );
-                    let _ = unsafe { ManuallyDrop::take(&mut self.env) };
-                    return;
-                }
-            };
-            // An untrackable region (its snapshot `stat` failed, or it was
+            // This env's file-backed regions, captured at import time (range
+            // diff). The dropped set is recorded from THIS per-env set — never a
+            // process-wide snapshot, which would conflate a second
+            // environment's live regions into this one's record (W-417).
+            let imported = self.imported_vmras.clone();
+            // An untrackable region (its import-time `stat` failed, or it was
             // deleted) cannot have its identity re-verified on re-map, so
             // freeing it would leave an unrecoverable dangling key. Leak the
             // whole env rather than free it.
-            if before.iter().any(|v| !v.size_known) {
+            if imported.iter().any(|v| !v.size_known) {
                 eprintln!(
                     "leotower: an import region was not trackable at snapshot time; leaking env instead of freeing"
                 );
@@ -285,7 +290,7 @@ impl Drop for EnvRegions {
                 Err(e) => match &after {
                     // Post-state readable: record exactly what was unmapped.
                     Ok(a) => {
-                        let freed = leo3::meta::diff_freed_vmras(&before, a);
+                        let freed = leo3::meta::diff_freed_vmras(&imported, a);
                         let n = freed.len();
                         leo3::meta::record_freed_set(&modules, freed);
                         eprintln!(
@@ -311,16 +316,16 @@ impl Drop for EnvRegions {
                     // Normal path: the free succeeded; record precisely what it
                     // unmapped.
                     Ok(a) => {
-                        let freed = leo3::meta::diff_freed_vmras(&before, a);
+                        let freed = leo3::meta::diff_freed_vmras(&imported, a);
                         leo3::meta::record_freed_set(&modules, freed);
                     }
                     // Free succeeded but post-state unreadable: every region of
-                    // this env was unmapped. In the stopgap's serial file-backed
-                    // model `before` is exactly this env's regions, so record it
-                    // for a best-effort revive (a later cross-set import re-maps
-                    // it; an occupied address just fails the no-clobber remap).
+                    // this env was unmapped. `imported` is exactly this env's
+                    // regions (precise, per-env), so record it for a best-effort
+                    // revive (a later cross-set import re-maps it; an occupied
+                    // address just fails the no-clobber remap).
                     Err(e) => {
-                        leo3::meta::record_freed_set(&modules, before.clone());
+                        leo3::meta::record_freed_set(&modules, imported.clone());
                         eprintln!(
                             "leotower: free_regions succeeded but /proc/self/maps unreadable \
                              ({e}); recording the pre-free VMA set as a best-effort revive"
@@ -498,7 +503,7 @@ impl Repl {
         #[cfg(target_os = "linux")]
         let _lifecycle = leo3::meta::lifecycle_lock();
         leo3::with_lean(|lean| -> LeanResult<Self> {
-            let (metam, modules, file_vmas_added) = match &module {
+            let (metam, modules, file_vmas_added, imported_vmras, trackable) = match &module {
                 Some(m) if m.ends_with(".lean") => {
                     let src = std::fs::read_to_string(m)
                         .map_err(|e| LeanError::other(&format!("cannot read {m}: {e}")))?;
@@ -520,24 +525,38 @@ impl Repl {
                     }
                     #[cfg(target_os = "linux")]
                     let import_after = leo3::meta::snapshot_lean_vmras();
-                    let file_vmas_added = {
+                    let (file_vmas_added, imported_vmras, trackable) = {
                         #[cfg(target_os = "linux")]
                         {
-                            // If either snapshot is unavailable we cannot measure
-                            // the file VMAs the import added; report 0 so the
-                            // drop-time gate fails closed (the env leaks rather
-                            // than is freed with an unverified region count).
+                            // Range-based "added" (robust to metadata churn of
+                            // pre-existing mappings) plus an explicit churn flag:
+                            // if the import window saw a pre-existing mapping's
+                            // identity change, `file_vmas_added` is unreliable and
+                            // the env is marked untrackable (leaked on drop).
+                            // Either snapshot unavailable -> 0/empty/untrackable
+                            // so the drop gate fails closed.
                             match (&import_before, &import_after) {
-                                (Ok(b), Ok(a)) => leo3::meta::diff_added_vmras(b, a).len() as u64,
-                                _ => 0,
+                                (Ok(b), Ok(a)) => {
+                                    let added = leo3::meta::diff_added_vmras(b, a);
+                                    let trackable =
+                                        !leo3::meta::import_window_has_identity_churn(b, a);
+                                    (added.len() as u64, added, trackable)
+                                }
+                                _ => (0u64, Vec::new(), false),
                             }
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            0
+                            (0u64, Vec::new(), false)
                         }
                     };
-                    (metam, vec!["Lean".to_string()], file_vmas_added)
+                    (
+                        metam,
+                        vec!["Lean".to_string()],
+                        file_vmas_added,
+                        imported_vmras,
+                        trackable,
+                    )
                 }
                 _ => {
                     let name = module.as_deref().unwrap_or("Lean");
@@ -554,33 +573,45 @@ impl Repl {
                     let env = import_modules_with_exts(lean, names, 0, true)?;
                     #[cfg(target_os = "linux")]
                     let import_after = leo3::meta::snapshot_lean_vmras();
-                    let file_vmas_added = {
+                    let (file_vmas_added, imported_vmras, trackable) = {
                         #[cfg(target_os = "linux")]
                         {
-                            // If either snapshot is unavailable we cannot measure
-                            // the file VMAs the import added; report 0 so the
-                            // drop-time gate fails closed (the env leaks rather
-                            // than is freed with an unverified region count).
+                            // Range-based "added" (robust to metadata churn of
+                            // pre-existing mappings) plus an explicit churn flag
+                            // (see the `.lean` branch above).
                             match (&import_before, &import_after) {
-                                (Ok(b), Ok(a)) => leo3::meta::diff_added_vmras(b, a).len() as u64,
-                                _ => 0,
+                                (Ok(b), Ok(a)) => {
+                                    let added = leo3::meta::diff_added_vmras(b, a);
+                                    let trackable =
+                                        !leo3::meta::import_window_has_identity_churn(b, a);
+                                    (added.len() as u64, added, trackable)
+                                }
+                                _ => (0u64, Vec::new(), false),
                             }
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            0
+                            (0u64, Vec::new(), false)
                         }
                     };
                     (
                         MetaMContext::new(lean, env)?,
                         vec![name.to_string()],
                         file_vmas_added,
+                        imported_vmras,
+                        trackable,
                     )
                 }
             };
             let (env, core_ctx, core_state, meta_ctx, meta_state) = metam.into_parts();
             Ok(Repl {
-                env: EnvRegions::new(env.unbind_mt(), modules, file_vmas_added),
+                env: EnvRegions::new(
+                    env.unbind_mt(),
+                    modules,
+                    file_vmas_added,
+                    imported_vmras,
+                    trackable,
+                ),
                 core_ctx: core_ctx.unbind_mt(),
                 core_state: core_state.unbind_mt(),
                 check_counter: 0,
@@ -1003,17 +1034,17 @@ mod quarantine_test {
         // This exercises the *real* destructor path. It poisons the
         // process-wide one-way latch, so it must be the last test to run in
         // this binary (leotower currently has no other Rust tests).
-        let (env, file_vmas) = leo3::test_with_lean(|lean| {
+        let (env, file_vmas, imported) = leo3::test_with_lean(|lean| {
             let before = leo3::meta::snapshot_lean_vmras().expect("maps readable");
             let env = import_modules_with_exts(lean, &["Lean"], 0, true)
                 .expect("import Lean")
                 .unbind_mt();
             let after = leo3::meta::snapshot_lean_vmras().expect("maps readable");
-            let added = leo3::meta::diff_added_vmras(&before, &after).len() as u64;
-            (env, added)
+            let added = leo3::meta::diff_added_vmras(&before, &after);
+            (env, added.len() as u64, added)
         });
         let before = lean_file_vma_count();
-        let regions = EnvRegions::new(env, vec!["Lean".to_string()], file_vmas);
+        let regions = EnvRegions::new(env, vec!["Lean".to_string()], file_vmas, imported, true);
         leo3::meta::poison_keepalive();
         assert!(leo3::meta::keepalive_poisoned());
         std::mem::drop(regions); // poisoned -> leak, no free_regions
@@ -1021,6 +1052,19 @@ mod quarantine_test {
             lean_file_vma_count(),
             before,
             "a quarantined drop must leak the env (no free_regions); the file VMAs stay mapped"
+        );
+        // Import boundary (item 1): a subsequent import must be REFUSED while
+        // the keepalive is quarantined — it would walk the symbol cache and
+        // dereference dangling keys. The refusal happens at
+        // `import_modules_with_exts` itself, not just in leotower's pre-import
+        // re-map hook.
+        let import = leo3::test_with_lean(|lean| {
+            leo3::meta::repl::import_modules_with_exts(lean, &["Lean"], 0, true)
+                .map(|b| b.unbind_mt())
+        });
+        assert!(
+            import.is_err(),
+            "a quarantined import must be refused at the leo3 import boundary"
         );
     }
 }
