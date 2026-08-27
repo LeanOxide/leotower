@@ -221,12 +221,10 @@ impl Drop for EnvRegions {
             // record steps run on caller threads and would otherwise interleave
             // with this free and corrupt the freed-set record).
             let _lifecycle = leo3::meta::lifecycle_lock();
-            // `environment_region_count` is `unsafe`: it walks the pinned Lean
-            // layout. The contract holds — `self.env` is a live environment
-            // this `EnvRegions` owns (the last live reference).
-            let region_count = unsafe {
-                leo3::meta::environment_region_count(self.env.as_ptr() as *const std::ffi::c_void)
-            };
+            // `self.env` is a live environment this `EnvRegions` owns (the last
+            // live reference); the typed count API reads it without exposing a
+            // raw pointer.
+            let region_count = leo3::meta::environment_region_count(&self.env);
             let should_free = self.trackable
                 && leo3::meta::safe_to_free_regions(region_count, self.file_vmas_added);
             if !should_free {
@@ -478,9 +476,7 @@ impl Repl {
                             // drop-time gate fails closed (the env leaks rather
                             // than is freed with an unverified region count).
                             match (&import_before, &import_after) {
-                                (Ok(b), Ok(a)) => {
-                                    leo3::meta::diff_added_vmras(b, a).len() as u64
-                                }
+                                (Ok(b), Ok(a)) => leo3::meta::diff_added_vmras(b, a).len() as u64,
                                 _ => 0,
                             }
                         }
@@ -514,9 +510,7 @@ impl Repl {
                             // drop-time gate fails closed (the env leaks rather
                             // than is freed with an unverified region count).
                             match (&import_before, &import_after) {
-                                (Ok(b), Ok(a)) => {
-                                    leo3::meta::diff_added_vmras(b, a).len() as u64
-                                }
+                                (Ok(b), Ok(a)) => leo3::meta::diff_added_vmras(b, a).len() as u64,
                                 _ => 0,
                             }
                         }
