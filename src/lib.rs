@@ -4,11 +4,11 @@
 //! This is the native extension module `leotower._leotower`.  The ergonomic
 //! Python-facing surface lives in `python/leotower/__init__.py`.
 
-use std::mem::ManuallyDrop;
 use leo3::ffi;
 use leo3::prelude::*;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use std::mem::ManuallyDrop;
 
 /// Convert a leo3 `LeanResult` error into a Python `RuntimeError`.
 fn to_py_err(e: impl std::fmt::Display) -> PyErr {
@@ -144,12 +144,11 @@ struct EnvRegions {
     /// Top-level module names imported into this environment, kept for the
     /// W-417 keepalive (see [`Drop for EnvRegions`]).
     modules: Vec<String>,
-    /// True if this environment's import data lives in file-backed lean
-    /// regions (re-mappable VMAs), as determined by the import-time
-    /// `/proc/self/maps` diff. A heap-backed environment (the Lean
-    /// `module.cpp` fallback when any deterministic `mmap` fails) has no file
-    /// regions and is only safe to free when its set has a file-backed copy.
-    is_file_backed: bool,
+    /// Number of lean file VMAs this environment's import added (the import
+    /// time `/proc/self/maps` diff). Compared against the live region count at
+    /// drop time to decide whether *every* region is file-backed and therefore
+    /// safe to `free_regions` (see [`Drop for EnvRegions`]).
+    file_vmas_added: u64,
     /// True while the current environment is the one tracked at import time.
     /// A [`Repl::save`] swap replaces the environment in place, so the new
     /// environment's file-backed-ness is not tracked; the old one is released
@@ -159,15 +158,11 @@ struct EnvRegions {
 }
 
 impl EnvRegions {
-    fn new(
-        env: LeanUnbound<LeanEnvironment>,
-        modules: Vec<String>,
-        is_file_backed: bool,
-    ) -> Self {
+    fn new(env: LeanUnbound<LeanEnvironment>, modules: Vec<String>, file_vmas_added: u64) -> Self {
         Self {
             env: ManuallyDrop::new(env),
             modules,
-            is_file_backed,
+            file_vmas_added,
             trackable: true,
         }
     }
@@ -203,31 +198,33 @@ impl Drop for EnvRegions {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
         {
-            // W-417 stopgap: decide whether this environment's regions are
-            // safe to free, based on whether they are file-backed (re-mappable
-            // VMAs) rather than the old process-wide snapshot heuristic.
+            // W-417 stopgap: decide whether this environment's regions are safe
+            // to free by proving *per region* that every compacted region is
+            // file-backed (a re-mappable VMA), not by a stale set-level flag.
             //
-            //  - `trackable == false` (the env was replaced by a `Repl::save`
-            //    swap): its file-backed-ness is not tracked, so leak it.
-            //  - file-backed: `free_regions` unmapped regions are re-mappable
-            //    file VMAs — free and record them for a later cross-set import
-            //    to re-map (reviving dangling cache keys).
-            //  - heap-backed with a file-backed copy of its set: its names
-            //    alias that copy's `g_native_symbol_cache` entries (never
-            //    newly cached), so freeing the `malloc` buffer is safe; there
-            //    are no file VMAs to record.
-            //  - heap-backed with no file-backed copy (first-time import whose
-            //    deterministic base collided with another set's mapping): its
-            //    names WERE newly cached, so freeing would dangle them; leak
-            //    instead.
+            // `free_regions` releases every region, including any **heap**
+            // region (the `malloc` buffer the Lean `module.cpp` fallback uses
+            // when a deterministic `mmap` base is already occupied). A heap
+            // region's `g_native_symbol_cache` keys point into that buffer and
+            // cannot be re-mapped once freed, so freeing a heap/mixed
+            // environment dangles them and the next import's symbol lookup
+            // SIGSEGVs.
+            //
+            // An environment is all-file-backed exactly when its live region
+            // count equals the number of lean file VMAs its import added (each
+            // file-backed region is one `mmap`; a heap region adds none). Any
+            // uncertainty — the count unreadable, a mismatch, or an untracked
+            // (`Repl::save`-swapped) environment — leaks instead.
             let modules: Vec<&str> = self.modules.iter().map(|s| s.as_str()).collect();
-            let should_free = if !self.trackable {
-                false
-            } else if self.is_file_backed {
-                true
-            } else {
-                leo3::meta::has_file_backed_copy(&modules)
-            };
+            // Serialize the whole free/record sequence against the
+            // remap/import sequences (their `/proc/self/maps` snapshots and
+            // record steps run on caller threads and would otherwise interleave
+            // with this free and corrupt the freed-set record).
+            let _lifecycle = leo3::meta::lifecycle_lock();
+            let region_count =
+                leo3::meta::environment_region_count(self.env.as_ptr() as *const std::ffi::c_void);
+            let should_free = self.trackable
+                && leo3::meta::safe_to_free_regions(region_count, self.file_vmas_added);
             if !should_free {
                 // Leak: releasing without `free_regions` never dangles a key.
                 let _ = unsafe { ManuallyDrop::take(&mut self.env) };
@@ -235,25 +232,17 @@ impl Drop for EnvRegions {
             }
             let unbound = unsafe { ManuallyDrop::take(&mut self.env) };
             let env_ptr = unbound.into_ptr();
-            if self.is_file_backed {
-                // File-backed: snapshot before the free, diff out the regions
-                // `free_regions` unmapped, and record them for re-mapping.
-                let before = leo3::meta::snapshot_lean_vmras();
-                let _ = leo3::with_lean(|lean| {
-                    let bound = unsafe { LeanBound::from_owned_ptr(lean, env_ptr) };
-                    unsafe { bound.free_regions() }
-                });
-                let after = leo3::meta::snapshot_lean_vmras();
-                let freed = leo3::meta::diff_freed_vmras(&before, &after);
-                leo3::meta::record_freed_set(&modules, freed);
-            } else {
-                // Heap-backed (with a file-backed copy): free the `malloc`
-                // buffer; there are no file VMAs to record for re-mapping.
-                let _ = leo3::with_lean(|lean| {
-                    let bound = unsafe { LeanBound::from_owned_ptr(lean, env_ptr) };
-                    unsafe { bound.free_regions() }
-                });
-            }
+            // All regions verified file-backed: snapshot before the free, diff
+            // out the regions `free_regions` unmapped, and record them for a
+            // later cross-set import to re-map (reviving dangling cache keys).
+            let before = leo3::meta::snapshot_lean_vmras();
+            let _ = leo3::with_lean(|lean| {
+                let bound = unsafe { LeanBound::from_owned_ptr(lean, env_ptr) };
+                unsafe { bound.free_regions() }
+            });
+            let after = leo3::meta::snapshot_lean_vmras();
+            let freed = leo3::meta::diff_freed_vmras(&before, &after);
+            leo3::meta::record_freed_set(&modules, freed);
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -277,7 +266,10 @@ fn block_on_remap(importing: &[&str]) -> LeanResult<()> {
     leo3::meta::remap_cross_set_bases(importing).map_err(|errs| {
         LeanError::other(&format!(
             "cannot revive freed import regions before importing {importing:?}: {}",
-            errs.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("; ")
+            errs.iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
         ))
     })
 }
@@ -411,8 +403,17 @@ impl Repl {
     #[new]
     #[pyo3(signature = (module=None))]
     fn new(module: Option<String>) -> PyResult<Self> {
+        // Serialize this import (remap cross-set bases → import → snapshots)
+        // against the environment free/record sequences: their
+        // `/proc/self/maps` snapshots and record steps run on caller threads
+        // and would otherwise interleave with this import's remap and corrupt
+        // the freed-set record. Linux-only (the stopgap is compiled out
+        // elsewhere); the guard lives until the end of `new`, spanning the
+        // `with_lean` import.
+        #[cfg(target_os = "linux")]
+        let _lifecycle = leo3::meta::lifecycle_lock();
         leo3::with_lean(|lean| -> LeanResult<Self> {
-            let (metam, modules, is_file_backed) = match &module {
+            let (metam, modules, file_vmas_added) = match &module {
                 Some(m) if m.ends_with(".lean") => {
                     let src = std::fs::read_to_string(m)
                         .map_err(|e| LeanError::other(&format!("cannot read {m}: {e}")))?;
@@ -434,21 +435,17 @@ impl Repl {
                     }
                     #[cfg(target_os = "linux")]
                     let import_after = leo3::meta::snapshot_lean_vmras();
-                    let is_file_backed = {
+                    let file_vmas_added = {
                         #[cfg(target_os = "linux")]
                         {
-                            !leo3::meta::diff_added_vmras(&import_before, &import_after).is_empty()
+                            leo3::meta::diff_added_vmras(&import_before, &import_after).len() as u64
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            false
+                            0
                         }
                     };
-                    #[cfg(target_os = "linux")]
-                    if is_file_backed {
-                        leo3::meta::register_file_backed_set(&["Lean"]);
-                    }
-                    (metam, vec!["Lean".to_string()], is_file_backed)
+                    (metam, vec!["Lean".to_string()], file_vmas_added)
                 }
                 _ => {
                     let name = module.as_deref().unwrap_or("Lean");
@@ -465,26 +462,26 @@ impl Repl {
                     let env = import_modules_with_exts(lean, names, 0, true)?;
                     #[cfg(target_os = "linux")]
                     let import_after = leo3::meta::snapshot_lean_vmras();
-                    let is_file_backed = {
+                    let file_vmas_added = {
                         #[cfg(target_os = "linux")]
                         {
-                            !leo3::meta::diff_added_vmras(&import_before, &import_after).is_empty()
+                            leo3::meta::diff_added_vmras(&import_before, &import_after).len() as u64
                         }
                         #[cfg(not(target_os = "linux"))]
                         {
-                            false
+                            0
                         }
                     };
-                    #[cfg(target_os = "linux")]
-                    if is_file_backed {
-                        leo3::meta::register_file_backed_set(names);
-                    }
-                    (MetaMContext::new(lean, env)?, vec![name.to_string()], is_file_backed)
+                    (
+                        MetaMContext::new(lean, env)?,
+                        vec![name.to_string()],
+                        file_vmas_added,
+                    )
                 }
             };
             let (env, core_ctx, core_state, meta_ctx, meta_state) = metam.into_parts();
             Ok(Repl {
-                env: EnvRegions::new(env.unbind_mt(), modules, is_file_backed),
+                env: EnvRegions::new(env.unbind_mt(), modules, file_vmas_added),
                 core_ctx: core_ctx.unbind_mt(),
                 core_state: core_state.unbind_mt(),
                 check_counter: 0,
